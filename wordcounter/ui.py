@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME, APP_VERSION, matching, updater
 from .audio import Listener
-from .config import Settings, resource_dir
+from .config import SOURCE_PARTS, Settings, resource_dir
 from .recognizer import Recognizer
 
 log = logging.getLogger(__name__)
@@ -54,9 +54,12 @@ QScrollArea {{ border: none; }}
 
 SOURCE_LABELS = [
     ("mic", "🎤  My microphone"),
-    ("pc", "🔊  PC sound (Discord, games, videos)"),
-    ("both", "🎤+🔊  Both"),
+    ("discord_mic", "💬+🎤  Discord + my microphone"),
+    ("discord", "💬  Discord only"),
+    ("pc", "🔊  All PC sound (Discord, games, videos)"),
+    ("both", "🔊+🎤  All PC sound + my microphone"),
 ]
+SOURCE_TAGS = {"mic": "🎤 ", "discord": "💬 ", "pc": "🔊 "}
 
 
 class Bridge(QObject):
@@ -345,7 +348,7 @@ class MainWindow(QMainWindow):
 
     def render_transcript(self):
         phrases = [w["text"] for w in self.s.words]
-        both = self.s.source == "both"
+        several = len(SOURCE_PARTS[self.s.source]) > 1
         out = []
         for source, text in self.transcript:
             pieces, last = [], 0
@@ -354,7 +357,7 @@ class MainWindow(QMainWindow):
                 pieces.append(f'<span style="color:{PINK}; font-weight:700;">{html.escape(text[a:b])}</span>')
                 last = b
             pieces.append(html.escape(text[last:]))
-            tag = ("🎤 " if source == "mic" else "🔊 ") if both else ""
+            tag = SOURCE_TAGS.get(source, "") if several else ""
             out.append(f"<div style='margin-bottom:4px'>{tag}{''.join(pieces)}</div>")
         if not out:
             out = ["<span style='color:#5d6476'>Words you say will show up here…</span>"]
@@ -380,7 +383,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ listening
     def wanted_sources(self) -> list[str]:
-        return ["mic", "pc"] if self.s.source == "both" else [self.s.source]
+        return SOURCE_PARTS[self.s.source]
 
     def toggle_listening(self):
         if self.listening:

@@ -58,7 +58,7 @@ jobs:
           $exe = "dist\WordCounter\WordCounter.exe"
           $p = Start-Process $exe -ArgumentList "--self-test","--report","$PWD\selftest-exe.txt" -Wait -PassThru
           Get-Content selftest-exe.txt
-          foreach ($needle in "PySide6", "numpy", "soundcard", "faster-whisper", "Speech model") {
+          foreach ($needle in "PySide6", "numpy", "soundcard", "faster-whisper", "Speech model", "Discord-only listening") {
             if (-not (Select-String -Path selftest-exe.txt -SimpleMatch $needle | Where-Object { $_.Line -like "✔*" })) {
               throw "Packaged app check failed: $needle"
             }
@@ -95,6 +95,18 @@ jobs:
           $exe = "dist\WordCounter\WordCounter.exe"
           $p = Start-Process $exe -ArgumentList "--quit-after","4" -Wait -PassThru
           Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 15
+
+      - name: Hear just one app (like Discord) - needs a sound device, info only
+        continue-on-error: true
+        run: |
+          $player = Start-Process powershell -ArgumentList "-NoProfile","-Command","`$p = New-Object System.Media.SoundPlayer '$PWD\ci-hear.wav'; try { `$p.PlayLooping() } catch { }; Start-Sleep 40" -PassThru -WindowStyle Hidden
+          Start-Sleep 3
+          $exe = "dist\WordCounter\WordCounter.exe"
+          $p = Start-Process $exe -ArgumentList "--app-audio-probe",$player.Id,"$PWD\ci-app-audio.json" -PassThru
+          $done = $p.WaitForExit(30000)
+          "probe finished: $done"
+          if (Test-Path ci-app-audio.json) { Get-Content ci-app-audio.json } else { "no report" }
+          Stop-Process $player -Force -ErrorAction SilentlyContinue
 
       - name: Build installer (Inno Setup)
         run: |

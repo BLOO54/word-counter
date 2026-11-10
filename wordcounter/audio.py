@@ -96,10 +96,52 @@ def _com_init() -> None:
             pass
 
 
-class Listener(threading.Thread):
-    """Records one sound source ('mic' or 'pc') until stopped, feeding a Segmenter."""
+DISCORD_EXES = ("Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe")
 
-    NAMES = {"mic": "your microphone", "pc": "PC sound"}
+
+def find_discord() -> int | None:
+    from .app_audio import find_app_pid
+    for exe in DISCORD_EXES:
+        pid = find_app_pid(exe)
+        if pid:
+            return pid
+    return None
+
+
+def run_probe(pid: int, timeout: float = 25.0) -> dict:
+    """Check, in a separate process, that Windows lets us hear just this app.
+    A separate process means a problem there can never crash Word Counter."""
+    import json
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    out = Path(tempfile.gettempdir()) / f"wordcounter-probe-{os.getpid()}-{pid}.json"
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable]
+    else:
+        cmd = [sys.executable, str(Path(__file__).resolve().parents[1] / "main.py")]
+    cmd += ["--app-audio-probe", str(pid), str(out)]
+    try:
+        out.unlink(missing_ok=True)
+        subprocess.run(cmd, timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        rep = json.loads(out.read_text(encoding="utf-8"))
+    except subprocess.TimeoutExpired:
+        rep = {"ok": False, "error": "the check took too long"}
+    except Exception as e:
+        rep = {"ok": False, "error": f"the check didn't finish ({e})"}
+    finally:
+        try:
+            out.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return rep
+
+
+class Listener(threading.Thread):
+    """Records one sound source ('mic', 'pc' or 'discord') until stopped, feeding a Segmenter."""
+
+    NAMES = {"mic": "your microphone", "pc": "PC sound", "discord": "Discord"}
 
     def __init__(self, kind: str, on_piece: Callable[[str, np.ndarray], None],
                  on_status: Callable[[str, str], None], on_level: Callable[[str, float], None]):
@@ -122,6 +164,10 @@ class Listener(threading.Thread):
             self.on_status(self.kind, f"can't use sound devices ({e})")
             return
         seg = Segmenter(lambda a: self.on_piece(self.kind, a), adaptive=(self.kind == "mic"))
+        if self.kind == "discord":
+            self._run_discord(seg)
+            self.on_status(self.kind, "stopped")
+            return
         while not self._halt.is_set():
             try:
                 if self.kind == "mic":
@@ -152,3 +198,38 @@ class Listener(threading.Thread):
                 self.on_status(self.kind, f"{msg} - retrying… ({e})")
                 self._halt.wait(3)
         self.on_status(self.kind, "stopped")
+
+    def _run_discord(self, seg: "Segmenter") -> None:
+        from .app_audio import AppAudio
+        checked: dict[int, dict] = {}
+        while not self._halt.is_set():
+            pid = find_discord()
+            if not pid:
+                self.on_status(self.kind, "waiting for Discord to open…")
+                self._halt.wait(3)
+                continue
+            if pid not in checked:
+                self.on_status(self.kind, "connecting…")
+                checked[pid] = run_probe(pid)
+                log.info("Discord-only check: %s", checked[pid])
+            if not checked[pid].get("ok"):
+                self.on_status(self.kind, "Windows won't let me hear Discord by itself "
+                               f"({checked[pid].get('error')}). Try “PC sound” instead.")
+                self._halt.wait(5)
+                continue
+            try:
+                with AppAudio(pid) as src:
+                    self.on_status(self.kind, "listening (Discord only)")
+                    checks = 0
+                    while not self._halt.is_set():
+                        frame = src.read(FRAME)
+                        seg.add(frame)
+                        self.on_level(self.kind, float(np.abs(frame).max()) if frame.size else 0.0)
+                        checks += 1
+                        if checks % 50 == 0 and find_discord() != pid:
+                            log.info("Discord restarted or closed")
+                            break
+            except Exception as e:
+                log.warning("Discord listener: %s", e)
+                self.on_status(self.kind, f"lost Discord's sound - retrying… ({e})")
+                self._halt.wait(3)

@@ -51,6 +51,12 @@ def self_test(report: str | None) -> int:
     check("soundcard", lambda: (__import__("soundcard") and "loaded"))
     check("faster-whisper", lambda: __import__("faster_whisper").__version__)
 
+    def discord():
+        from wordcounter.audio import find_discord
+        pid = find_discord()
+        return f"Discord is running (process {pid})" if pid else "Discord isn't open right now"
+    check("Discord-only listening", discord)
+
     def model():
         from wordcounter.recognizer import load_model, model_dir
         t = time.monotonic()
@@ -122,11 +128,19 @@ def main() -> int:
     ap.add_argument("--quit-after", type=float)
     ap.add_argument("--hear-test", nargs=2, metavar=("WAV", "REPORT"))
     ap.add_argument("--words", default="")
+    ap.add_argument("--app-audio-probe", nargs=2, metavar=("PID", "OUT"))
     args, _ = ap.parse_known_args()
 
     setup_logging()
     log = logging.getLogger("main")
 
+    if args.app_audio_probe:                  # run by the Discord listener in a separate process
+        from wordcounter.app_audio import probe
+        pid, out = args.app_audio_probe
+        rep = probe(int(pid))
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(rep, fh)
+        return 0
     if args.self_test:
         return self_test(args.report)
     if args.hear_test:
