@@ -91,3 +91,13 @@ def test_check_latest_reads_github_answer():
     assert info.version == "9.0.0" and info.installer_name.endswith(".exe") and info.sha256 == "abc"
     assert updater.whats_new(info) == "faster"
     assert updater.check_latest("9.0.0", opener=lambda req, timeout: Resp(json.dumps(answer).encode())) is None
+
+
+def test_to_16k_mono():
+    from wordcounter.audio import to_16k_mono
+    stereo48 = np.ones((4800, 2), np.float32) * 0.5
+    out = to_16k_mono(stereo48, 48000)
+    assert out.shape == (1600,) and np.allclose(out, 0.5)
+    out = to_16k_mono(np.zeros((4410, 2), np.float32), 44100)
+    assert abs(len(out) - 1600) <= 1
+    assert to_16k_mono(np.zeros((1600, 1), np.float32), 16000).shape == (1600,)

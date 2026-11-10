@@ -183,12 +183,14 @@ class Listener(threading.Thread):
                     name = speaker.name
                     same = lambda: sc.default_speaker().id == speaker.id  # noqa: E731
                 log.info("listening to %s: %s", self.kind, name)
+                rec, rate = self._open(dev)
                 self.on_status(self.kind, f"listening ({name})")
-                with dev.recorder(samplerate=RATE, channels=1, blocksize=1024) as rec:
+                with rec as r:
+                    need = FRAME * rate // RATE
                     checks = 0
                     while not self._halt.is_set():
-                        data = rec.record(numframes=FRAME)
-                        frame = np.asarray(data, dtype=np.float32).reshape(-1).copy()
+                        data = np.asarray(r.record(numframes=need), dtype=np.float32)
+                        frame = to_16k_mono(data, rate)
                         seg.add(frame)
                         self.on_level(self.kind, float(np.abs(frame).max()) if frame.size else 0.0)
                         checks += 1
@@ -196,11 +198,69 @@ class Listener(threading.Thread):
                             log.info("%s device changed - switching", self.kind)
                             break
             except Exception as e:
-                log.warning("listener %s: %s", self.kind, e)
-                msg = "no microphone found" if self.kind == "mic" else "can't hear the PC's sound"
-                self.on_status(self.kind, f"{msg} - retrying… ({e})")
+                log.warning("listener %s failed: %r", self.kind, e, exc_info=True)
+                msg = "the microphone won't start" if self.kind == "mic" else "can't hear the PC's sound"
+                self.on_status(self.kind, f"{msg} - retrying… ({describe(e)})")
                 self._halt.wait(3)
         self.on_status(self.kind, "stopped")
+
+    def _open(self, dev):
+        """Open a recorder. Some USB mics refuse 16 kHz mono, so fall back to the mic's own
+        format (we convert it ourselves). Returns (opened recorder, its sample rate)."""
+        tries = [(RATE, 1), (48000, 1), (48000, None), (44100, None), (44100, 1)]
+        last = None
+        for rate, ch in tries:
+            try:
+                kw = {"samplerate": rate, "blocksize": 1024}
+                if ch:
+                    kw["channels"] = ch
+                rec = dev.recorder(**kw)
+                rec.__enter__()           # actually opens the device - this is where it can fail
+                rec.record(numframes=rate // 100)
+            except Exception as e:
+                last = e
+                log.warning("%s: %s Hz / %s channel(s) refused: %r", self.kind, rate, ch or "all",
+                            e, exc_info=True)
+                try:
+                    rec.__exit__(None, None, None)
+                except Exception:
+                    pass
+                continue
+            log.info("%s opened at %s Hz, %s channel(s)", self.kind, rate, ch or "all")
+            return _Opened(rec), rate
+        raise last if last else RuntimeError("no usable sound format")
+
+
+class _Opened:
+    """Wraps an already-opened recorder so `with` closes it without opening it again."""
+
+    def __init__(self, rec):
+        self.rec = rec
+
+    def __enter__(self):
+        return self.rec
+
+    def __exit__(self, *exc):
+        return self.rec.__exit__(*exc)
+
+
+def describe(e: Exception) -> str:
+    return str(e) or type(e).__name__
+
+
+def to_16k_mono(data: np.ndarray, rate: int) -> np.ndarray:
+    """Any channels / sample rate -> 16 kHz mono float32."""
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    data = data.reshape(-1).astype(np.float32)
+    if rate == RATE:
+        return data.copy()
+    if rate % RATE == 0:
+        k = rate // RATE
+        n = len(data) // k * k
+        return data[:n].reshape(-1, k).mean(axis=1).astype(np.float32)
+    idx = np.arange(0, len(data), rate / RATE)
+    return np.interp(idx, np.arange(len(data)), data).astype(np.float32)
 
     def _run_discord(self, seg: "Segmenter") -> None:
         from .app_audio import AppAudio

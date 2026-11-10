@@ -36,6 +36,7 @@ class Settings:
     source: str = "mic"
     beep: bool = True
     always_on_top: bool = False
+    show_text: bool = True
     geometry: str = ""
 
     @classmethod

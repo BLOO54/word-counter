@@ -229,13 +229,15 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
 
-        heard = QLabel("WHAT I'M HEARING")
-        heard.setObjectName("muted")
-        lay.addWidget(heard)
+        self.heard_label = QLabel("WHAT I'M HEARING")
+        self.heard_label.setObjectName("muted")
+        lay.addWidget(self.heard_label)
         self.text = QTextEdit()
         self.text.setReadOnly(True)
         self.text.setMinimumHeight(110)
         lay.addWidget(self.text, 2)
+        self.spacer = QWidget()
+        lay.addWidget(self.spacer, 2)
 
         bottom = QHBoxLayout()
         self.beep_box = QCheckBox("Beep when counted")
@@ -244,12 +246,17 @@ class MainWindow(QMainWindow):
         self.top_box = QCheckBox("Always on top")
         self.top_box.setChecked(self.s.always_on_top)
         self.top_box.toggled.connect(self.apply_on_top)
+        self.text_box = QCheckBox("Show what I'm hearing")
+        self.text_box.setChecked(self.s.show_text)
+        self.text_box.toggled.connect(self.show_text_changed)
         reset = QPushButton("Reset all counts")
         reset.clicked.connect(self.reset_all)
         clear = QPushButton("Clear text")
         clear.clicked.connect(self.clear_text)
+        self.clear_btn = clear
         bottom.addWidget(self.beep_box)
         bottom.addWidget(self.top_box)
+        bottom.addWidget(self.text_box)
         bottom.addStretch(1)
         bottom.addWidget(reset)
         bottom.addWidget(clear)
@@ -269,6 +276,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self.rebuild_cards()
         self.render_transcript()
+        self.show_text_changed(self.s.show_text, save=False)
 
     # ------------------------------------------------------------------ words
     def hotwords(self) -> str:
@@ -328,9 +336,9 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ hearing
     def on_heard(self, source: str, text: str):
-        log.info("heard (%s): %s", source, text)
-        self.transcript.append((source, text))
-        self.transcript = self.transcript[-60:]
+        if self.s.show_text:
+            self.transcript.append((source, text))
+            self.transcript = self.transcript[-60:]
         hit = False
         for i, w in enumerate(self.s.words):
             n = matching.count(text, w["text"])
@@ -341,10 +349,13 @@ class MainWindow(QMainWindow):
                     self.cards[i].count.setText(str(w["count"]))
                     self.cards[i].flash()
         if hit:
+            log.info("counted from %s: %s", source,
+                     ", ".join(f"{w['text']}={w['count']}" for w in self.s.words))
             self.s.save()
             if self.s.beep:
                 self.beep()
-        self.render_transcript()
+        if self.s.show_text:
+            self.render_transcript()
 
     def render_transcript(self):
         phrases = [w["text"] for w in self.s.words]
@@ -456,6 +467,18 @@ class MainWindow(QMainWindow):
         self.status.setText("   ·   ".join(parts))
 
     # ------------------------------------------------------------------ options
+    def show_text_changed(self, on, save=True):
+        on = bool(on)
+        for w in (self.heard_label, self.text, self.clear_btn):
+            w.setVisible(on)
+        self.spacer.setVisible(not on)
+        if not on:
+            self.transcript = []          # nothing heard is kept while it's switched off
+            self.render_transcript()
+        if save:
+            self.s.show_text = on
+            self.s.save()
+
     def beep_changed(self, on):
         self.s.beep = on
         self.s.save()
