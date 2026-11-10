@@ -89,7 +89,8 @@ class Recognizer(threading.Thread):
             if audio is None:
                 return
             try:
-                text = transcribe(self.model, audio, self.get_hotwords())
+                # no word hints: Whisper tends to skip hinted words at the start of a sentence
+                text = transcribe(self.model, audio)
             except Exception:
                 log.exception("transcribing failed")
                 continue

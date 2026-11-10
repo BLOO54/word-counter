@@ -81,7 +81,7 @@ jobs:
           Get-Content ci-hear.json
           $r = Get-Content ci-hear.json -Raw | ConvertFrom-Json
           "bro: $($r.counts.bro)/3   pizza: $($r.counts.pizza)/2   no way: $($r.counts.'no way')/1"
-          if ($r.counts.bro -lt 2 -or $r.counts.pizza -lt 1) { throw "the app didn't count the words well enough" }
+          if ($r.counts.bro -lt 3 -or $r.counts.pizza -lt 2 -or $r.counts.'no way' -lt 1) { throw "the app didn't count the words well enough" }
 
       - name: Picture of the window
         run: |

@@ -108,7 +108,7 @@ def hear_test(wav: str, report: str, words: list[str]) -> int:
     texts, counts = [], {w: 0 for w in words}
     t = time.monotonic()
     for p in pieces:
-        text = transcribe(model, p, ", ".join(words))
+        text = transcribe(model, p)
         texts.append(text)
         for w in words:
             counts[w] += matching.count(text, w)

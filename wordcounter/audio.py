@@ -22,7 +22,7 @@ RATE = 16000                 # what the speech recognition wants
 FRAME = RATE // 10           # 0.1 s
 MAX_FRAMES = 60              # cut long talking into ~6 s pieces
 END_SILENCE = 5              # 0.5 s of quiet ends a piece
-PREROLL = 3                  # keep 0.3 s before speech starts so first words aren't clipped
+PREROLL = 5                  # keep 0.5 s before speech starts so first words aren't clipped
 
 
 class Segmenter:
