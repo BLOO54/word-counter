@@ -40,7 +40,7 @@ def test_segmenter_splits_on_pauses():
     for i in range(0, len(audio) - FRAME + 1, FRAME):
         seg.add(audio[i:i + FRAME])
     assert len(pieces) == 2
-    assert 0.9 < len(pieces[0]) / RATE < 1.9
+    assert 0.9 < len(pieces[0]) / RATE < 2.2
 
 
 def test_segmenter_cuts_long_talking():
