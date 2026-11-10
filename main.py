@@ -129,11 +129,28 @@ def main() -> int:
     ap.add_argument("--hear-test", nargs=2, metavar=("WAV", "REPORT"))
     ap.add_argument("--words", default="")
     ap.add_argument("--app-audio-probe", nargs=2, metavar=("PID", "OUT"))
+    ap.add_argument("--listen-test", metavar="REPORT")
     args, _ = ap.parse_known_args()
 
     setup_logging()
     log = logging.getLogger("main")
 
+    if args.listen_test:                      # press "Start" without a window, report what each source says
+        import threading
+        from wordcounter.audio import Listener
+        from wordcounter.config import SOURCE_PARTS
+        statuses: dict = {}
+        lock = threading.Lock()
+
+        def status(kind, text):
+            with lock:
+                statuses.setdefault(kind, []).append(text)
+        for kind in SOURCE_PARTS["both"] + ["discord"]:
+            Listener(kind, lambda k, a: None, status, lambda k, v: None).start()
+        time.sleep(6)
+        with open(args.listen_test, "w", encoding="utf-8") as fh:
+            json.dump(statuses, fh, indent=2, ensure_ascii=False)
+        return 0
     if args.app_audio_probe:                  # run by the Discord listener in a separate process
         from wordcounter.app_audio import probe
         pid, out = args.app_audio_probe

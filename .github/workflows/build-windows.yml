@@ -63,6 +63,20 @@ jobs:
             }
           }
 
+      - name: Press "Start Listening" for every sound source (catches sound-system start-up errors)
+        run: |
+          $exe = "dist\WordCounter\WordCounter.exe"
+          $p = Start-Process $exe -ArgumentList "--listen-test","$PWD\ci-listen.json" -PassThru
+          if (-not $p.WaitForExit(60000)) { Stop-Process $p -Force; throw "listen test hung" }
+          if (-not (Test-Path ci-listen.json)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "no listen report" }
+          Get-Content ci-listen.json
+          # build machines have no microphone, so "no microphone found" is expected here -
+          # but the sound system itself must start
+          if (Select-String -Path ci-listen.json -SimpleMatch "can't use sound devices") {
+            Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40
+            throw "the sound system failed to start when pressing Start"
+          }
+
       - name: Hearing test (a computer voice says the words, the app counts them)
         run: |
           Add-Type -AssemblyName System.Speech
@@ -173,6 +187,7 @@ jobs:
             Output/WordCounter-Setup-*.exe
             window.png
             ci-hear.json
+            ci-listen.json
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.
             If Windows says "Windows protected your PC", click **More info → Run anyway** (the app isn't paid-signed).

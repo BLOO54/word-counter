@@ -156,18 +156,21 @@ class Listener(threading.Thread):
         self._halt.set()
 
     def run(self) -> None:
-        _com_init()
         warnings.filterwarnings("ignore", message=".*discontinuity.*")
-        try:
-            import soundcard as sc
-        except Exception as e:
-            self.on_status(self.kind, f"can't use sound devices ({e})")
-            return
         seg = Segmenter(lambda a: self.on_piece(self.kind, a), adaptive=(self.kind == "mic"))
-        if self.kind == "discord":
+        if self.kind == "discord":                 # Discord doesn't use soundcard at all
             self._run_discord(seg)
             self.on_status(self.kind, "stopped")
             return
+        try:
+            # soundcard switches on Windows audio (COM) itself when first loaded, and treats
+            # "it's already on" as an error - so it must be loaded BEFORE we do that ourselves.
+            import soundcard as sc
+        except Exception as e:
+            log.exception("soundcard failed to load")
+            self.on_status(self.kind, f"can't use sound devices ({e})")
+            return
+        _com_init()      # a 2nd listener thread (mic + PC sound) still needs COM on its own thread
         while not self._halt.is_set():
             try:
                 if self.kind == "mic":
