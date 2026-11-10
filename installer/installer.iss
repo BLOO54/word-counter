@@ -20,7 +20,8 @@ OutputDir=..\Output
 OutputBaseFilename=WordCounter-Setup-{#MyAppVersion}
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExe}
-Compression=lzma2
+; fast compression: builds in ~25 s instead of ~80 s (installer is a bit bigger)
+Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible

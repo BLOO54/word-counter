@@ -1,6 +1,5 @@
 # Builds Word Counter on a real Windows machine provided by GitHub, tests it,
-# and publishes:  WordCounter-Setup-<version>.exe   (installer)
-#                 WordCounter-Portable-<version>.zip (no install needed)
+# and publishes:  WordCounter-Setup-<version>.exe   (installer - the in-app Update button uses it)
 # Get them from the "Releases" section of the repository page.
 
 name: Build Windows app
@@ -152,15 +151,6 @@ jobs:
           python -c "from wordcounter import updater as U; i=U.check_latest('0.0.1'); print('latest release:', i.version, i.installer_name, i.size, 'bytes, sha256:', bool(i.sha256))"
           $global:LASTEXITCODE = 0
 
-      - name: Portable zip
-        run: Compress-Archive -Path dist\WordCounter\* -DestinationPath "Output\WordCounter-Portable-${{ steps.ver.outputs.version }}.zip"
-
-      - name: Upload installer + portable
-        uses: actions/upload-artifact@v4
-        with:
-          name: WordCounter-Windows-${{ steps.ver.outputs.version }}
-          path: Output/*
-
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -180,13 +170,13 @@ jobs:
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: |
-            Output/*
+            Output/WordCounter-Setup-*.exe
             window.png
             ci-hear.json
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.
             If Windows says "Windows protected your PC", click **More info → Run anyway** (the app isn't paid-signed).
             **Already have Word Counter 1.1.0 or newer?** Just click the Update button in the app.
-            No admin rights needed. Prefer no installer? Download the Portable zip, extract it, and run `WordCounter.exe`.
+            No admin rights needed.
 
             What's new: ${{ steps.ver.outputs.notes }}
