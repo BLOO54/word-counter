@@ -10,7 +10,7 @@ import threading
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout,
     QWidget,
 )
@@ -64,7 +64,7 @@ SOURCE_TAGS = {"mic": "🎤 ", "discord": "💬 ", "pc": "🔊 "}
 
 class Bridge(QObject):
     """Lets the background threads talk to the window safely."""
-    heard = Signal(str, str)
+    heard = Signal(str, str, int, bool)
     ready = Signal(object)
     status = Signal(str, str)
     level = Signal(str, float)
@@ -151,6 +151,86 @@ class Toast(QWidget):
         QTimer.singleShot(ms, self.close)
 
 
+class DownloadsDialog(QDialog):
+    """Lists everything Word Counter downloaded, with its size and a Remove button."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("Downloads")
+        self.setStyleSheet(STYLE)
+        self.setMinimumWidth(460)
+        self.lay = QVBoxLayout(self)
+        self.build()
+
+    def build(self):
+        while self.lay.count():
+            item = self.lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                _clear_layout(item.layout())
+        title = QLabel("Downloaded extras")
+        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        self.lay.addWidget(title)
+        rows = []
+        for key in models.ORDER:
+            if models.MODELS[key][0] is not None and self.win.store.installed(key):
+                rows.append((f"{models.MODELS[key][1]} accuracy model", self.win.store.path(key),
+                             lambda k=key: self.remove_model(k)))
+        if gpu.installed():
+            rows.append(("Graphics card support (NVIDIA files)", gpu.libs_dir(), self.remove_gpu))
+        total = 0
+        for label, path, fn in rows:
+            size = models.folder_size(path)
+            total += size
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label), 1)
+            sz = QLabel(f"{size / 1e9:.1f} GB" if size >= 1e9 else f"{size / 1e6:.0f} MB")
+            sz.setObjectName("muted")
+            row.addWidget(sz)
+            b = QPushButton("Remove")
+            b.setObjectName("small")
+            b.clicked.connect(fn)
+            row.addWidget(b)
+            self.lay.addLayout(row)
+        note = QLabel(f"Total: {total / 1e9:.1f} GB. Removed items can be downloaded again any time."
+                      if rows else "Nothing downloaded - only the built-in Fast model is on your PC.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        self.lay.addWidget(note)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        self.lay.addWidget(close, 0, Qt.AlignRight)
+
+    def remove_model(self, key):
+        w = self.win
+        if w.s.accuracy == key:
+            w.use_model("fast")          # stop using it first
+        QTimer.singleShot(1500 if w.s.accuracy == "fast" else 0, lambda: (w.store.remove(key), self.build()))
+
+    def remove_gpu(self):
+        w = self.win
+        if w.s.use_gpu:
+            w.gpu_box.setChecked(False)  # move back to the processor first
+        # the files are still loaded by Windows until Word Counter restarts, so remove them on next start
+        try:
+            (gpu.libs_dir() / "remove-me").write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+        w.popup("Graphics card support", "It will be removed the next time Word Counter starts.")
+        self.accept()
+
+
+def _clear_layout(layout):
+    while layout.count():
+        item = layout.takeAt(0)
+        if item.widget():
+            item.widget().deleteLater()
+        elif item.layout():
+            _clear_layout(item.layout())
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings, start_engine: bool = True):
         super().__init__()
@@ -159,7 +239,8 @@ class MainWindow(QMainWindow):
         self.listening = False
         self.engine_ready = False
         self.engine_error: str | None = None
-        self.transcript: list[tuple[str, str]] = []
+        self.transcript: list[dict] = []          # {key, source, text, final}
+        self.live_counter = stats.LiveCounter()
         self.source_status: dict[str, str] = {}
         self.cards: list[WordCard] = []
         self._lock = threading.Lock()
@@ -211,6 +292,7 @@ class MainWindow(QMainWindow):
             self.recognizer = Recognizer(self.bridge.heard.emit, self.bridge.ready.emit, self.hotwords,
                                          model_path=path, use_gpu=bool(use_gpu),
                                          on_switch_failed=self.bridge.switch_failed.emit)
+            self.recognizer.beam = 5 if self.s.careful else 1
             QTimer.singleShot(60_000, self.clean_old_installers)
             self.recognizer.start()
             # quietly look for a new version a few seconds after start, then every few hours
@@ -318,6 +400,13 @@ class MainWindow(QMainWindow):
             self.gpu_box.setEnabled(False)
             self.gpu_box.setToolTip("No NVIDIA graphics driver found on this PC")
         self.gpu_box.toggled.connect(self.gpu_changed)
+        self.careful_box = QCheckBox("Careful mode (more accurate, a bit slower)")
+        self.careful_box.setChecked(self.s.careful)
+        self.careful_box.toggled.connect(self.careful_changed)
+        self.live_box = QCheckBox("Count while they're talking (faster)")
+        self.live_box.setChecked(self.s.live)
+        self.live_box.setToolTip("Checks each sentence while it's still being said. Best with the graphics card on.")
+        self.live_box.toggled.connect(self.live_changed)
         reset = QPushButton("Reset all counts")
         reset.clicked.connect(self.reset_all)
         clear = QPushButton("Clear text")
@@ -341,7 +430,15 @@ class MainWindow(QMainWindow):
         ms_row.addWidget(ms_lbl)
         ms_row.addWidget(self.milestone_box)
         ms_row.addStretch(1)
-        options.addLayout(ms_row, 3, 0, 1, 2)
+        options.addWidget(self.careful_box, 3, 0)
+        options.addWidget(self.live_box, 3, 1)
+        downloads = QPushButton("Downloads…")
+        downloads.setObjectName("small")
+        downloads.setToolTip("See and remove downloaded accuracy models and graphics card files")
+        downloads.clicked.connect(self.show_downloads)
+        ms_row.addSpacing(16)
+        ms_row.addWidget(downloads)
+        options.addLayout(ms_row, 4, 0, 1, 2)
         bottom.addLayout(options)
         bottom.addStretch(1)
         bottom.addWidget(reset)
@@ -421,27 +518,43 @@ class MainWindow(QMainWindow):
         self.rebuild_cards()
 
     # ------------------------------------------------------------------ hearing
-    def on_heard(self, source: str, text: str):
+    def on_heard(self, source: str, text: str, piece: int = -1, final: bool = True):
+        key = (source, piece)
         if self.s.show_text:
-            self.transcript.append((source, text))
-            self.transcript = self.transcript[-60:]
-        hit = False
+            entry = next((e for e in self.transcript if e["key"] == key), None)
+            if final and not text:
+                if entry:
+                    self.transcript.remove(entry)
+            elif entry:
+                entry["text"], entry["final"] = text, final
+            else:
+                self.transcript.append({"key": key, "source": source, "text": text, "final": final})
+                self.transcript = self.transcript[-60:]
+        deltas = self.live_counter.update(source, piece, text, final,
+                                          [w["text"] for w in self.s.words], self.s.similar)
+        hit = changed = False
         milestones = []
         for i, w in enumerate(self.s.words):
-            n = matching.count(text, w["text"], self.s.similar)
-            if n:
-                reached = stats.crossed_milestone(w["count"], w["count"] + n, self.s.milestone)
-                if reached:
-                    milestones.append((w["text"], reached))
-                w["count"] += n
+            d = deltas.get(w["text"], 0)
+            if not d:
+                continue
+            before = w["count"]
+            w["count"] = max(0, before + d)
+            changed = True
+            if i < len(self.cards):
+                self.cards[i].count.setText(str(w["count"]))
+            if w["count"] > before:
                 hit = True
                 if i < len(self.cards):
-                    self.cards[i].count.setText(str(w["count"]))
                     self.cards[i].flash()
-        if hit:
-            log.info("counted from %s: %s", source,
+                reached = stats.crossed_milestone(before, w["count"], self.s.milestone)
+                if reached:
+                    milestones.append((w["text"], reached))
+        if changed:
+            log.info("counted from %s%s: %s", source, "" if final else " (live)",
                      ", ".join(f"{w['text']}={w['count']}" for w in self.s.words))
             self.s.save()
+        if hit:
             if milestones:
                 self.celebrate(milestones)
             elif self.s.beep:
@@ -470,7 +583,8 @@ class MainWindow(QMainWindow):
         phrases = [w["text"] for w in self.s.words]
         several = len(SOURCE_PARTS[self.s.source]) > 1
         out = []
-        for source, text in self.transcript:
+        for e in self.transcript:
+            source, text = e["source"], e["text"]
             pieces, last = [], 0
             for a, b in matching.highlight_spans(text, phrases, self.s.similar):
                 pieces.append(html.escape(text[last:a]))
@@ -478,7 +592,8 @@ class MainWindow(QMainWindow):
                 last = b
             pieces.append(html.escape(text[last:]))
             tag = SOURCE_TAGS.get(source, "") if several else ""
-            out.append(f"<div style='margin-bottom:4px'>{tag}{''.join(pieces)}</div>")
+            style = "margin-bottom:4px" + ("" if e["final"] else "; color:#7d8496; font-style:italic")
+            out.append(f"<div style='{style}'>{tag}{''.join(pieces)}</div>")
         if not out:
             out = ["<span style='color:#5d6476'>Words you say will show up here…</span>"]
         self.text.setHtml("".join(out))
@@ -515,7 +630,8 @@ class MainWindow(QMainWindow):
         self.listening = True
         self.source_status = {}
         for kind in self.wanted_sources():
-            lst = Listener(kind, self._piece, self.bridge.status.emit, self.bridge.level.emit)
+            lst = Listener(kind, self._piece, self.bridge.status.emit, self.bridge.level.emit,
+                           live=lambda: self.s.live)
             self.listeners[kind] = lst
             lst.start()
         self.listen_btn.setText("■  Stop Listening")
@@ -535,9 +651,9 @@ class MainWindow(QMainWindow):
         self._restyle(self.listen_btn)
         self.update_status()
 
-    def _piece(self, source, audio):
+    def _piece(self, source, audio, piece=-1, final=True):
         if self.recognizer is not None:
-            self.recognizer.submit(source, audio)
+            self.recognizer.submit(source, audio, piece, final)
 
     def source_changed(self, _i):
         self.s.source = self.source.currentData()
@@ -594,6 +710,20 @@ class MainWindow(QMainWindow):
             self.s.show_text = on
             self.s.save()
 
+    def careful_changed(self, on):
+        self.s.careful = bool(on)
+        self.s.save()
+        if self.recognizer is not None:
+            self.recognizer.beam = 5 if on else 1
+
+    def live_changed(self, on):
+        self.s.live = bool(on)        # listeners ask for this each time, so it applies straight away
+        self.s.save()
+
+    def show_downloads(self):
+        DownloadsDialog(self).exec()
+        self.fill_accuracy_box()
+
     def milestone_changed(self, _i):
         self.s.milestone = int(self.milestone_box.currentData())
         self.s.save()
@@ -618,7 +748,7 @@ class MainWindow(QMainWindow):
     def fill_accuracy_box(self):
         self.accuracy.blockSignals(True)
         self.accuracy.clear()
-        icons = {"fast": "⚡", "better": "🎯", "best": "🏆"}
+        icons = {"fast": "⚡", "better": "🎯", "best": "🏆", "max": "💎"}
         for key in models.ORDER:
             repo, label, size, about = models.MODELS[key]
             extra = "" if repo is None or self.store.installed(key) else f"  ({size} download)"
@@ -646,7 +776,10 @@ class MainWindow(QMainWindow):
         repo, label, size, about = models.MODELS[key]
         box = QMessageBox(QMessageBox.Question, f"Download {label}?",
                           f"{label} accuracy needs a one-time download ({size}).\n\n"
-                          f"It {about}. It runs on your PC like the built-in one.\n\nDownload it now?",
+                          f"It {about}. It runs on your PC like the built-in one."
+                          + ("\n\nWithout “Use my graphics card” switched on it will be very slow."
+                             if key == "max" and not self.s.use_gpu else "")
+                          + "\n\nDownload it now?",
                           QMessageBox.Yes | QMessageBox.No, self)
         box.button(QMessageBox.Yes).setText("Download")
         box.button(QMessageBox.No).setText("Cancel")

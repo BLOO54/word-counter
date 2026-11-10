@@ -43,9 +43,12 @@ def load_model(path=None, gpu: bool = False):
     return WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=threads)
 
 
-def transcribe(model, audio: np.ndarray, hotwords: str = "") -> str:
-    """Audio (16 kHz mono float32) -> text. Skips bits that are probably not speech."""
-    kwargs = dict(language="en", beam_size=1, vad_filter=False, without_timestamps=True,
+def transcribe(model, audio: np.ndarray, hotwords: str = "", beam: int = 1) -> str:
+    """Audio (16 kHz mono float32) -> text. Skips bits that are probably not speech.
+    beam > 1 is "careful mode": compare several possible wordings and keep the best."""
+    if audio.size < 1600:          # under 0.1 s - nothing to hear
+        return ""
+    kwargs = dict(language="en", beam_size=beam, vad_filter=False, without_timestamps=True,
                   condition_on_previous_text=False, temperature=0.0)
     if hotwords:
         kwargs["hotwords"] = hotwords
@@ -66,7 +69,7 @@ class Recognizer(threading.Thread):
     """Background worker: load a model, then transcribe pieces as they arrive.
     switch(path) loads a different model without stopping."""
 
-    def __init__(self, on_text: Callable[[str, str], None], on_ready: Callable[[str | None], None],
+    def __init__(self, on_text: Callable[[str, str, int, bool], None], on_ready: Callable[[str | None], None],
                  get_hotwords: Callable[[], str], model_path=None, use_gpu: bool = False,
                  on_switch_failed: Callable[[str, str], None] = lambda msg, what: None):
         super().__init__(daemon=True, name="recognizer")
@@ -77,23 +80,37 @@ class Recognizer(threading.Thread):
         self.on_switch_failed = on_switch_failed
         self.use_gpu = use_gpu
         self.on_gpu = False
+        self.beam = 1                     # 5 = careful mode
+        self._lock = threading.Lock()
+        self._version = 0
+        self._latest: dict = {}
         self.q: queue.Queue = queue.Queue()
         self.model = None
 
-    def submit(self, source: str, audio: np.ndarray) -> None:
-        # if the PC is falling behind, drop the oldest pieces so counts stay live
-        while self.q.qsize() > 6:
-            try:
-                item = self.q.get_nowait()
-            except queue.Empty:
-                break
-            if item[0] == "__switch__":       # never drop a model change
-                self.q.put(item)
-                break
-        self.q.put((source, audio))
+    def submit(self, source: str, audio: np.ndarray, piece: int = -1, final: bool = True) -> None:
+        """Queue a piece of speech. Live checks (final=False) are skipped if a newer check or the
+        finished piece is already waiting, and dropped first if the PC falls behind."""
+        with self._lock:
+            self._version += 1
+            v = self._version
+            self._latest[(source, piece)] = v
+        if self.q.qsize() > 6:
+            keep = []
+            while True:
+                try:
+                    keep.append(self.q.get_nowait())
+                except queue.Empty:
+                    break
+            keep = [it for it in keep if it[0] == "__switch__" or it[3]]          # drop live checks
+            while len([it for it in keep if it[0] != "__switch__"]) > 6:         # still behind: drop oldest
+                i = next(i for i, it in enumerate(keep) if it[0] != "__switch__")
+                keep.pop(i)
+            for it in keep:
+                self.q.put(it)
+        self.q.put((source, audio, piece, final, v))
 
     def switch(self, path, gpu: bool) -> None:
-        self.q.put(("__switch__", (path, gpu)))
+        self.q.put(("__switch__", (path, gpu), -1, True, 0))
 
     def _load(self, path, gpu: bool) -> str | None:
         """Load a model; returns None if it worked, otherwise the reason."""
@@ -133,7 +150,7 @@ class Recognizer(threading.Thread):
         err = self._load_best(self.model_path, self.use_gpu)
         self.on_ready(None if not err else f"speech engine failed to start ({err})")
         while True:
-            source, audio = self.q.get()
+            source, audio, piece, final, version = self.q.get()
             if source == "__switch__":
                 path, gpu = audio
                 old, old_gpu = self.model, self.on_gpu
@@ -148,14 +165,21 @@ class Recognizer(threading.Thread):
                 return
             if self.model is None:
                 continue
+            if not final and self._latest.get((source, piece), 0) > version:
+                continue                    # a newer check of this sentence is already waiting
             try:
                 # no word hints: Whisper tends to skip hinted words at the start of a sentence
-                text = transcribe(self.model, audio)
+                text = transcribe(self.model, audio, beam=self.beam)
             except Exception:
                 log.exception("transcribing failed")
-                continue
-            if text:
-                self.on_text(source, text)
+                text = ""
+                if not final:
+                    continue
+            if final:
+                with self._lock:
+                    self._latest.pop((source, piece), None)
+            if text or final:
+                self.on_text(source, text, piece, final)
 
     def stop(self) -> None:
-        self.q.put(("", None))
+        self.q.put(("", None, -1, True, 0))

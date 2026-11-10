@@ -41,6 +41,8 @@ class Settings:
     accuracy: str = "fast"
     use_gpu: bool = False
     milestone: int = 0
+    careful: bool = False
+    live: bool = False
     geometry: str = ""
 
     @classmethod
@@ -63,7 +65,7 @@ class Settings:
             s.source = "mic"
         if s.milestone not in (0, 10, 25, 50, 100):
             s.milestone = 0
-        if s.accuracy not in ("fast", "better", "best"):
+        if s.accuracy not in ("fast", "better", "best", "max"):
             s.accuracy = "fast"
         return s
 

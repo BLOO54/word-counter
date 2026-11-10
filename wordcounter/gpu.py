@@ -49,8 +49,17 @@ def has_nvidia_driver() -> bool:
     return (Path(windir) / "System32" / "nvcuda.dll").exists()
 
 
+def remove_if_marked() -> None:
+    """Finish a removal asked for last time (files can't be deleted while they're loaded)."""
+    if (libs_dir() / "remove-me").exists():
+        remove()
+        log.info("graphics card support removed")
+
+
 def installed() -> bool:
     d = libs_dir()
+    if (d / "remove-me").exists():
+        return False
     try:
         info = json.loads((d / "ready.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):

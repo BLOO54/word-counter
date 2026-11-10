@@ -11,3 +11,38 @@ def crossed_milestone(before: int, after: int, every: int) -> int | None:
         return None
     top = after // every * every
     return top if top > before and top > 0 else None
+
+
+class LiveCounter:
+    """Counting while someone is still talking, without counting anything twice.
+
+    Each piece of speech is checked several times while it grows ("live"), then once more
+    when it's finished ("final"). Live checks only ever ADD what's new since the last check;
+    the final check is the most reliable, so it corrects the total for that piece either way.
+    """
+
+    def __init__(self):
+        self.seen: dict[tuple, dict[str, int]] = {}
+        self.done: list[tuple] = []          # recently finished pieces - ignore any late live check
+
+    def update(self, source: str, piece: int, text: str, final: bool, words: list[str],
+               similar: bool = True) -> dict[str, int]:
+        from . import matching
+        key = (source, piece)
+        if key in self.done:
+            return {}
+        prev = self.seen.get(key, {})
+        now = {w: matching.count(text, w, similar) for w in words}
+        deltas = {}
+        for w in words:
+            d = now[w] - prev.get(w, 0)
+            if not final:
+                d = max(0, d)
+            if d:
+                deltas[w] = d
+        if final:
+            self.seen.pop(key, None)
+            self.done = (self.done + [key])[-50:]
+        else:
+            self.seen[key] = {w: max(now[w], prev.get(w, 0)) for w in words}
+        return deltas

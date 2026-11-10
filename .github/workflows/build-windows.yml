@@ -97,6 +97,17 @@ jobs:
           "bro: $($r.counts.bro)/3   pizza: $($r.counts.pizza)/2   no way: $($r.counts.'no way')/1"
           if ($r.counts.bro -lt 3 -or $r.counts.pizza -lt 2 -or $r.counts.'no way' -lt 1) { throw "the app didn't count the words well enough" }
 
+      - name: Hearing test with "Count while talking" + "Careful mode" (no double counts allowed)
+        run: |
+          $exe = "dist\WordCounter\WordCounter.exe"
+          $p = Start-Process $exe -ArgumentList "--hear-test","$PWD\ci-hear.wav","$PWD\ci-hear-live.json","--words","`"bro,pizza,no way`"","--live","--careful" -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process $p -Force; throw "live hearing test took too long" }
+          if (-not (Test-Path ci-hear-live.json)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "no live report" }
+          Get-Content ci-hear-live.json
+          $r = Get-Content ci-hear-live.json -Raw | ConvertFrom-Json
+          if ($r.live_checks -lt 1) { throw "no live checks happened" }
+          if ($r.counts.bro -ne 3 -or $r.counts.pizza -ne 2 -or $r.counts.'no way' -ne 1) { throw "live counting got the wrong totals (missed or double counted)" }
+
       - name: Hearing test with the downloadable "Better" model
         run: |
           $exe = "dist\WordCounter\WordCounter.exe"
@@ -126,6 +137,7 @@ jobs:
           $p = Start-Process $exe -ArgumentList "--screenshot","$PWD\window.png","--quit-after","3" -Wait -PassThru
           if (-not (Test-Path window.png)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "window did not open" }
           if (-not (Test-Path window-milestone.png)) { throw "milestone pop-up did not show" }
+          if (-not (Test-Path window-downloads.png)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "Downloads window did not open" }
 
       - name: Can the app hear sound devices (info only - build machines have none)
         continue-on-error: true
@@ -212,9 +224,11 @@ jobs:
             Output/WordCounter-Setup-*.exe
             window.png
             window-milestone.png
+            window-downloads.png
             ci-hear.json
             ci-listen.json
             ci-hear-better.json
+            ci-hear-live.json
             ci-gpu.json
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.

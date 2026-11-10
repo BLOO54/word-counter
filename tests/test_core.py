@@ -139,3 +139,35 @@ def test_milestones():
     assert stats.crossed_milestone(9, 10, 10) == 10
     assert stats.crossed_milestone(10, 11, 10) is None
     assert stats.crossed_milestone(3, 99, 0) is None
+
+
+def test_live_counter_never_double_counts():
+    from wordcounter.stats import LiveCounter
+    lc, words = LiveCounter(), ["bro", "pizza"]
+    assert lc.update("mic", 1, "hey bro", False, words) == {"bro": 1}           # counted early
+    assert lc.update("mic", 1, "hey bro how", False, words) == {}               # nothing new
+    assert lc.update("mic", 1, "hey bro how are you bro", False, words) == {"bro": 1}
+    assert lc.update("mic", 1, "Hey bro, how are you, bro?", True, words) == {}  # final agrees: no change
+    assert lc.update("mic", 1, "hey bro bro bro", False, words) == {}           # late live check ignored
+
+
+def test_live_counter_final_corrects():
+    from wordcounter.stats import LiveCounter
+    lc, words = LiveCounter(), ["connor"]
+    assert lc.update("discord", 7, "is that conner", False, words) == {"connor": 1}
+    assert lc.update("discord", 7, "is that a corner", True, words) == {"connor": -1}   # misheard early
+    assert lc.update("discord", 8, "connor", True, words) == {"connor": 1}             # no live check: final only
+    assert lc.update("mic", 7, "connor", True, words) == {"connor": 1}                 # other source, own piece
+
+
+def test_segmenter_live_checks():
+    pieces = []
+    seg = Segmenter(on_piece=lambda pid, a, final: pieces.append((pid, len(a), final)), live=lambda: True)
+    audio = np.concatenate([np.zeros(RATE, np.float32), _tone(2.5, 0.3), np.zeros(RATE, np.float32)])
+    for i in range(0, len(audio) - FRAME + 1, FRAME):
+        seg.add(audio[i:i + FRAME])
+    finals = [p for p in pieces if p[2]]
+    lives = [p for p in pieces if not p[2]]
+    assert len(finals) == 1 and len(lives) >= 2
+    assert all(p[0] == finals[0][0] for p in lives)                 # all checks belong to the same sentence
+    assert all(p[1] < finals[0][1] for p in lives)

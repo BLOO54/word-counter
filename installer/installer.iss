@@ -51,5 +51,9 @@ begin
   Result := ExpandConstant('{param:RESTARTAPP|0}') = '1';
 end;
 
+[UninstallDelete]
+; downloaded accuracy models and graphics card files (can be several GB)
+Type: filesandordirs; Name: "{localappdata}\WordCounter"
+
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExe} /F"; Flags: runhidden; RunOnceId: "KillApp"

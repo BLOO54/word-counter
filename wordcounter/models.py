@@ -27,9 +27,11 @@ MODELS = {
     "fast": (None, "Fast", "built in", "quickest, misses more words"),
     "better": ("Systran/faster-whisper-small.en", "Better", "about 480 MB", "catches a lot more, still quick"),
     "best": ("Systran/faster-distil-whisper-large-v3", "Best", "about 1.5 GB",
-             "best with slang and names, a bit slower"),
+             "great with slang and names, a bit slower"),
+    "max": ("Systran/faster-whisper-large-v3", "Max", "about 3 GB",
+            "the most accurate - needs the graphics card to keep up"),
 }
-ORDER = ("fast", "better", "best")
+ORDER = ("fast", "better", "best", "max")
 NEEDED_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt", "vocabulary.json",
                 "preprocessor_config.json")
 HF = "https://huggingface.co"
@@ -61,6 +63,10 @@ class ModelStore:
         except (OSError, ValueError):
             return False
         return bool(files) and all((p / f).exists() for f in files)
+
+    def remove(self, name: str) -> None:
+        if MODELS[name][0] is not None:
+            shutil.rmtree(self.path(name), ignore_errors=True)
 
     def _get(self, url: str, timeout=30):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -121,3 +127,10 @@ class ModelStore:
         (target / "ready.json").write_text(json.dumps({"repo": repo, "files": files}), encoding="utf-8")
         log.info("model %s downloaded (%.0f MB)", name, total / 1e6)
         return target
+
+
+def folder_size(path: Path) -> int:
+    try:
+        return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    except OSError:
+        return 0

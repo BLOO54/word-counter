@@ -22,14 +22,26 @@ RATE = 16000                 # what the speech recognition wants
 FRAME = RATE // 10           # 0.1 s
 MAX_FRAMES = 60              # cut long talking into ~6 s pieces
 END_SILENCE = 5              # 0.5 s of quiet ends a piece
+LIVE_EVERY = 8               # with "count while talking": check the sentence so far every 0.8 s
 PREROLL = 5                  # keep 0.5 s before speech starts so first words aren't clipped
 
 
 class Segmenter:
     """Turns a stream of 0.1 s frames into pieces of speech."""
 
-    def __init__(self, emit: Callable[[np.ndarray], None], adaptive: bool = True):
+    def __init__(self, emit: Callable[[np.ndarray], None] | None = None, adaptive: bool = True,
+                 on_piece: Callable[[int, np.ndarray, bool], None] | None = None,
+                 live: Callable[[], bool] = lambda: False, live_every: int = LIVE_EVERY):
+        """emit(audio) gets each finished piece. Or on_piece(piece_id, audio, final) gets finished
+        pieces (final=True) AND, while live() is true, the piece-so-far every `live_every` frames
+        (final=False) - so words can be counted while someone is still talking."""
         self.emit = emit
+        self.on_piece = on_piece
+        self.live = live
+        self.live_every = live_every
+        self.piece_id = 0
+        self.since_live = 0
+        self.live_sent = False
         self.adaptive = adaptive        # mic: learn the room's background noise. PC sound: fixed level.
         self.floor = 0.003
         self.frames: list[np.ndarray] = []
@@ -73,12 +85,28 @@ class Segmenter:
             tail = self.levels[-15:]
             cut = len(self.frames) - 15 + int(np.argmin(tail)) + 1
             self._flush(cut, keep_going=True)
+        else:
+            self.since_live += 1
+            if (self.on_piece is not None and self.since_live >= self.live_every and self.speech >= 3
+                    and self.quiet < 3 and self.live()):
+                self.since_live = 0
+                self.live_sent = True
+                self.on_piece(self.piece_id, np.concatenate(self.frames), False)
 
     def _flush(self, upto: int, keep_going: bool = False) -> None:
         piece, rest = self.frames[:upto], self.frames[upto:]
         rest_levels = self.levels[upto:]
         if self.speech >= 3 and piece:
-            self.emit(np.concatenate(piece))
+            audio = np.concatenate(piece)
+            if self.on_piece is not None:
+                self.on_piece(self.piece_id, audio, True)
+            elif self.emit is not None:
+                self.emit(audio)
+        elif self.on_piece is not None and self.live_sent:
+            self.on_piece(self.piece_id, np.zeros(0, np.float32), True)   # close a piece that got a live check
+        self.piece_id += 1
+        self.since_live = 0
+        self.live_sent = False
         self.frames, self.levels = rest, rest_levels
         self.quiet = 0
         self.speech = sum(1 for lv in rest_levels if lv > self.threshold()) if keep_going else 0
@@ -143,13 +171,15 @@ class Listener(threading.Thread):
 
     NAMES = {"mic": "your microphone", "pc": "PC sound", "discord": "Discord"}
 
-    def __init__(self, kind: str, on_piece: Callable[[str, np.ndarray], None],
-                 on_status: Callable[[str, str], None], on_level: Callable[[str, float], None]):
+    def __init__(self, kind: str, on_piece: Callable[[str, np.ndarray, int, bool], None],
+                 on_status: Callable[[str, str], None], on_level: Callable[[str, float], None],
+                 live: Callable[[], bool] = lambda: False):
         super().__init__(daemon=True, name=f"listen-{kind}")
         self.kind = kind
         self.on_piece = on_piece
         self.on_status = on_status
         self.on_level = on_level
+        self.live = live
         self._halt = threading.Event()
 
     def stop(self) -> None:
@@ -157,7 +187,8 @@ class Listener(threading.Thread):
 
     def run(self) -> None:
         warnings.filterwarnings("ignore", message=".*discontinuity.*")
-        seg = Segmenter(lambda a: self.on_piece(self.kind, a), adaptive=(self.kind == "mic"))
+        seg = Segmenter(adaptive=(self.kind == "mic"), live=self.live,
+                        on_piece=lambda pid, a, final: self.on_piece(self.kind, a, pid, final))
         if self.kind in ("discord", "mic"):         # these talk to Windows directly (no soundcard)
             (self._run_discord if self.kind == "discord" else self._run_mic)(seg)
             self.on_status(self.kind, "stopped")
