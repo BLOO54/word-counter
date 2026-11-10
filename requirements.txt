@@ -1,0 +1,9 @@
+# User interface
+PySide6>=6.6,<7
+
+# Speech recognition that runs on your own PC (no internet needed)
+faster-whisper>=1.0.2
+numpy>=1.24
+
+# Microphone + "what the PC plays" (WASAPI loopback)
+soundcard>=0.4.3; sys_platform == "win32"

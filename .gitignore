@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+Output/
+models/
+.pytest_cache/
+selftest-*.txt
