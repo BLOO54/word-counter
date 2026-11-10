@@ -57,6 +57,12 @@ def self_test(report: str | None) -> int:
         return f"Discord is running (process {pid})" if pid else "Discord isn't open right now"
     check("Discord-only listening", discord)
 
+    def graphics():
+        from wordcounter import gpu
+        return ("NVIDIA driver found" if gpu.has_nvidia_driver() else "no NVIDIA driver") + \
+               (", graphics card support downloaded" if gpu.installed() else "")
+    check("Graphics card", graphics)
+
     def model():
         from wordcounter.recognizer import load_model, model_dir
         t = time.monotonic()
@@ -139,6 +145,7 @@ def main() -> int:
     ap.add_argument("--model", default="fast")
     ap.add_argument("--app-audio-probe", nargs=2, metavar=("PID", "OUT"))
     ap.add_argument("--listen-test", metavar="REPORT")
+    ap.add_argument("--gpu-test", metavar="REPORT")
     args, _ = ap.parse_known_args()
 
     setup_logging()
@@ -165,6 +172,37 @@ def main() -> int:
         with open(args.listen_test, "w", encoding="utf-8") as fh:
             json.dump({"ok": ok, "crashes": crashes, "silent": missing, "statuses": statuses},
                       fh, indent=2, ensure_ascii=False)
+        return 0
+    if args.gpu_test:                         # build check: download + load NVIDIA's libraries
+        import ctypes
+        from wordcounter import gpu
+        rep = {}
+        t = time.monotonic()
+        try:
+            gpu.download()
+            rep["download_s"] = round(time.monotonic() - t, 1)
+            rep["activated"] = gpu.activate()
+            info = json.loads((gpu.libs_dir() / "ready.json").read_text(encoding="utf-8"))
+            rep["packages"] = [f"{w['package']} {w['version']} ({w['size'] / 1e6:.0f} MB)" for w in info["wheels"]]
+            loads = {}
+            for name in ("cublas64_12.dll", "cublasLt64_12.dll", "cudnn64_9.dll"):
+                try:
+                    ctypes.WinDLL(name)
+                    loads[name] = "ok"
+                except OSError as e:
+                    loads[name] = str(e)
+            rep["dll_loads"] = loads
+            rep["total_mb"] = round(sum(f.stat().st_size for f in gpu.libs_dir().iterdir()) / 1e6)
+        except Exception as e:
+            rep["error"] = repr(e)
+        try:
+            from wordcounter.recognizer import load_model
+            load_model(None, gpu=True)
+            rep["gpu_model"] = "loaded"
+        except Exception as e:
+            rep["gpu_model"] = f"failed as expected without a graphics card: {gpu.describe_error(e)}"
+        with open(args.gpu_test, "w", encoding="utf-8") as fh:
+            json.dump(rep, fh, indent=2)
         return 0
     if args.app_audio_probe:                  # run by the Discord listener in a separate process
         from wordcounter.app_audio import probe

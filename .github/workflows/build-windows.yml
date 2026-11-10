@@ -107,6 +107,19 @@ jobs:
           $r = Get-Content ci-hear-better.json -Raw | ConvertFrom-Json
           if ($r.counts.bro -lt 3 -or $r.counts.pizza -lt 2) { throw "Better model didn't count the words" }
 
+      - name: Graphics card support - download + load NVIDIA's libraries (only when asked)
+        if: contains(github.event.head_commit.message, '[gpu-test]')
+        timeout-minutes: 15
+        run: |
+          $exe = "dist\WordCounter\WordCounter.exe"
+          $p = Start-Process $exe -ArgumentList "--gpu-test","$PWD\ci-gpu.json" -PassThru
+          if (-not $p.WaitForExit(800000)) { Stop-Process $p -Force; throw "GPU test took too long" }
+          if (-not (Test-Path ci-gpu.json)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "no GPU report" }
+          Get-Content ci-gpu.json
+          $r = Get-Content ci-gpu.json -Raw | ConvertFrom-Json
+          if ($r.error) { throw "graphics card download failed: $($r.error)" }
+          foreach ($d in "cublas64_12.dll", "cudnn64_9.dll") { if ($r.dll_loads.$d -ne "ok") { throw "$d won't load: $($r.dll_loads.$d)" } }
+
       - name: Picture of the window
         run: |
           $exe = "dist\WordCounter\WordCounter.exe"
@@ -200,6 +213,7 @@ jobs:
             ci-hear.json
             ci-listen.json
             ci-hear-better.json
+            ci-gpu.json
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.
             If Windows says "Windows protected your PC", click **More info → Run anyway** (the app isn't paid-signed).

@@ -26,12 +26,19 @@ def model_dir() -> Path:
     return resource_dir() / "models" / MODEL_NAME
 
 
-def load_model(path=None):
+def load_model(path=None, gpu: bool = False):
     import os
     from faster_whisper import WhisperModel
     path = path or model_dir()
     if not (path / "model.bin").exists():
         raise RuntimeError(f"speech model missing at {path}")
+    if gpu:
+        model = WhisperModel(str(path), device="cuda", compute_type="float16")
+        # run one tiny bit of silence so any missing graphics-card library shows up now, not mid-game
+        segments, _ = model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1,
+                                       without_timestamps=True)
+        list(segments)
+        return model
     threads = max(2, min(8, (os.cpu_count() or 4) // 2))
     return WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=threads)
 
@@ -60,14 +67,16 @@ class Recognizer(threading.Thread):
     switch(path) loads a different model without stopping."""
 
     def __init__(self, on_text: Callable[[str, str], None], on_ready: Callable[[str | None], None],
-                 get_hotwords: Callable[[], str], model_path=None,
-                 on_switch_failed: Callable[[str], None] = lambda msg: None):
+                 get_hotwords: Callable[[], str], model_path=None, use_gpu: bool = False,
+                 on_switch_failed: Callable[[str, str], None] = lambda msg, what: None):
         super().__init__(daemon=True, name="recognizer")
         self.on_text = on_text
         self.on_ready = on_ready
         self.get_hotwords = get_hotwords
         self.model_path = model_path
         self.on_switch_failed = on_switch_failed
+        self.use_gpu = use_gpu
+        self.on_gpu = False
         self.q: queue.Queue = queue.Queue()
         self.model = None
 
@@ -83,39 +92,57 @@ class Recognizer(threading.Thread):
                 break
         self.q.put((source, audio))
 
-    def switch(self, path) -> None:
-        self.q.put(("__switch__", path))
+    def switch(self, path, gpu: bool) -> None:
+        self.q.put(("__switch__", (path, gpu)))
 
-    def _load(self, path) -> str | None:
+    def _load(self, path, gpu: bool) -> str | None:
         """Load a model; returns None if it worked, otherwise the reason."""
         t = time.monotonic()
         try:
-            self.model = load_model(path)
+            self.model = load_model(path, gpu)
         except Exception as e:
-            log.exception("speech model failed to load")
+            log.warning("speech model failed to load (%s)", "graphics card" if gpu else "processor",
+                        exc_info=True)
             return str(e) or type(e).__name__
-        log.info("speech model %s loaded in %.1f s", getattr(path, "name", "base.en"), time.monotonic() - t)
+        self.on_gpu = gpu
+        log.info("speech model %s loaded on the %s in %.1f s", getattr(path, "name", "base.en"),
+                 "graphics card" if gpu else "processor", time.monotonic() - t)
         return None
 
-    def run(self) -> None:
-        err = self._load(self.model_path)
-        if err and self.model_path is not None:
-            err = self._load(None)           # fall back to the built-in model
-            self.on_ready(None if not err else f"speech engine failed to start ({err})")
+    def _load_best(self, path, gpu: bool) -> str | None:
+        """Try graphics card -> processor -> built-in model, reporting what had to give way."""
+        err = self._load(path, gpu)
+        if err and gpu:
+            from .gpu import describe_error
+            gpu_err = describe_error(RuntimeError(err))
+            err = self._load(path, False)
             if not err:
-                self.on_switch_failed("the chosen accuracy model wouldn't load, using Fast instead")
-        else:
-            self.on_ready(None if not err else f"speech engine failed to start ({err})")
+                self.on_switch_failed(f"The graphics card didn't work ({gpu_err}), "
+                                      "so it's using the processor instead.", "gpu")
+                return None
+        if err and path is not None:
+            first = err
+            err = self._load(None, False)
+            if not err:
+                self.on_switch_failed(f"That accuracy model wouldn't load ({first}), using Fast instead.",
+                                      "model")
+                return None
+        return err
+
+    def run(self) -> None:
+        err = self._load_best(self.model_path, self.use_gpu)
+        self.on_ready(None if not err else f"speech engine failed to start ({err})")
         while True:
             source, audio = self.q.get()
             if source == "__switch__":
-                old = self.model
-                err = self._load(audio)
+                path, gpu = audio
+                old, old_gpu = self.model, self.on_gpu
+                self.model = None
+                err = self._load_best(path, gpu)
                 if err:
-                    self.model = old
-                    self.on_switch_failed(err)
-                else:
-                    self.on_ready(None)
+                    self.model, self.on_gpu = old, old_gpu
+                    self.on_switch_failed(err, "model")
+                self.on_ready(None)
                 continue
             if audio is None:
                 return

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, APP_VERSION, matching, models, updater
+from . import APP_NAME, APP_VERSION, gpu, matching, models, updater
 from .audio import Listener
 from .config import SOURCE_PARTS, Settings, resource_dir
 from .recognizer import Recognizer
@@ -73,7 +73,9 @@ class Bridge(QObject):
     update_downloaded = Signal(object)
     model_progress = Signal(float)
     model_done = Signal(str, object)
-    switch_failed = Signal(str)
+    switch_failed = Signal(str, str)
+    gpu_progress = Signal(float)
+    gpu_done = Signal(object)
 
 
 class WordCard(QFrame):
@@ -139,6 +141,7 @@ class MainWindow(QMainWindow):
         self._update_busy = False
         self.store = models.ModelStore()
         self.model_note = ""
+        self.recognizer = None
         self.downloading = None
 
         self.setWindowTitle(APP_NAME)
@@ -167,14 +170,22 @@ class MainWindow(QMainWindow):
         self.bridge.model_progress.connect(self.on_model_progress)
         self.bridge.model_done.connect(self.on_model_done)
         self.bridge.switch_failed.connect(self.on_switch_failed)
+        self.bridge.gpu_progress.connect(self.on_gpu_progress)
+        self.bridge.gpu_done.connect(self.on_gpu_done)
         if start_engine:
             acc = self.s.accuracy
             path = self.store.path(acc) if acc != "fast" and self.store.installed(acc) else None
             if path is None:
                 self.s.accuracy = "fast"
                 self.set_accuracy_box("fast")
+            use_gpu = self.s.use_gpu and gpu.installed() and gpu.activate()
+            if not use_gpu and self.s.use_gpu:
+                self.s.use_gpu = False
+                self.gpu_box.setChecked(False)
             self.recognizer = Recognizer(self.bridge.heard.emit, self.bridge.ready.emit, self.hotwords,
-                                         model_path=path, on_switch_failed=self.bridge.switch_failed.emit)
+                                         model_path=path, use_gpu=bool(use_gpu),
+                                         on_switch_failed=self.bridge.switch_failed.emit)
+            QTimer.singleShot(60_000, self.clean_old_installers)
             self.recognizer.start()
             # quietly look for a new version a few seconds after start, then every few hours
             QTimer.singleShot(4000, lambda: self.check_updates(quiet=True))
@@ -275,6 +286,12 @@ class MainWindow(QMainWindow):
         self.similar_box = QCheckBox("Count similar spellings (Connor / Conner)")
         self.similar_box.setChecked(self.s.similar)
         self.similar_box.toggled.connect(self.similar_changed)
+        self.gpu_box = QCheckBox("Use my graphics card (NVIDIA) - makes Better/Best fast")
+        self.gpu_box.setChecked(self.s.use_gpu)
+        if not gpu.has_nvidia_driver():
+            self.gpu_box.setEnabled(False)
+            self.gpu_box.setToolTip("No NVIDIA graphics driver found on this PC")
+        self.gpu_box.toggled.connect(self.gpu_changed)
         reset = QPushButton("Reset all counts")
         reset.clicked.connect(self.reset_all)
         clear = QPushButton("Clear text")
@@ -286,6 +303,7 @@ class MainWindow(QMainWindow):
         options.addWidget(self.top_box, 0, 1)
         options.addWidget(self.text_box, 1, 0)
         options.addWidget(self.similar_box, 1, 1)
+        options.addWidget(self.gpu_box, 2, 0, 1, 2)
         bottom.addLayout(options)
         bottom.addStretch(1)
         bottom.addWidget(reset)
@@ -498,6 +516,8 @@ class MainWindow(QMainWindow):
                 parts.append(f"{Listener.NAMES[kind].capitalize()}: {self.source_status.get(kind, 'starting…')}")
         elif self.engine_ready:
             parts.append("Ready. Press Start Listening.")
+        if self.engine_ready and not self.model_note and self.recognizer is not None:
+            parts.append("running on the graphics card ⚡" if self.recognizer.on_gpu else "running on the processor")
         self.status.setText("   ·   ".join(parts))
 
     # ------------------------------------------------------------------ options
@@ -608,16 +628,114 @@ class MainWindow(QMainWindow):
             self.engine_ready = False
             self.model_note = f"Switching to {models.MODELS[key][1]} accuracy…"
             self.update_status()
-            self.recognizer.switch(self.store.path(key) if key != "fast" else None)
+            self.recognizer.switch(self.store.path(key) if key != "fast" else None, self.gpu_wanted())
 
-    def on_switch_failed(self, msg):
-        self.engine_ready = True
-        self.model_note = ""
-        self.s.accuracy = getattr(self, "_prev_accuracy", "fast")
+    def gpu_wanted(self) -> bool:
+        return bool(self.s.use_gpu and gpu.installed() and gpu.activate())
+
+    def on_switch_failed(self, msg, what):
+        if what == "gpu":
+            self.s.use_gpu = False
+            self.gpu_box.blockSignals(True)
+            self.gpu_box.setChecked(False)
+            self.gpu_box.blockSignals(False)
+        else:
+            self.s.accuracy = getattr(self, "_prev_accuracy", "fast") if self.engine_ready else "fast"
+            self.set_accuracy_box(self.s.accuracy)
         self.s.save()
-        self.set_accuracy_box(self.s.accuracy)
+        self.model_note = ""
         self.update_status()
-        self.popup("Couldn't change accuracy", msg)
+        self.popup("Heads up", msg)
+
+    def gpu_changed(self, on):
+        from PySide6.QtWidgets import QMessageBox
+        on = bool(on)
+        if self.downloading:
+            self.gpu_box.blockSignals(True)
+            self.gpu_box.setChecked(self.s.use_gpu)
+            self.gpu_box.blockSignals(False)
+            return
+        if not on or gpu.installed():
+            self.s.use_gpu = on
+            self.s.save()
+            if on and not gpu.activate():
+                return
+            self.engine_ready = False
+            self.model_note = "Moving speech recognition to the " + ("graphics card…" if on else "processor…")
+            self.update_status()
+            if self.recognizer is not None:
+                acc = self.s.accuracy
+                self.recognizer.switch(self.store.path(acc) if acc != "fast" else None, on)
+            return
+        box = QMessageBox(QMessageBox.Question, "Use your graphics card?",
+                          "To run on your NVIDIA graphics card, Word Counter needs NVIDIA's speech-maths "
+                          "libraries (cuBLAS and cuDNN) - a one-time download of about 1 GB, straight from "
+                          "NVIDIA's official packages.\n\nAfterwards Word Counter restarts by itself.\n\n"
+                          "Download now?", QMessageBox.Yes | QMessageBox.No, self)
+        box.button(QMessageBox.Yes).setText("Download")
+        box.button(QMessageBox.No).setText("Cancel")
+        if box.exec() != QMessageBox.Yes:
+            self.gpu_box.blockSignals(True)
+            self.gpu_box.setChecked(False)
+            self.gpu_box.blockSignals(False)
+            return
+        self.downloading = "gpu"
+        self.gpu_box.setEnabled(False)
+        self.accuracy.setEnabled(False)
+
+        def work():
+            try:
+                gpu.download(progress=lambda d, t: self.bridge.gpu_progress.emit(d / t if t else 0))
+                self.bridge.gpu_done.emit(None)
+            except Exception as e:
+                log.exception("graphics card download failed")
+                self.bridge.gpu_done.emit(e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_gpu_progress(self, frac):
+        self.model_note = f"Downloading graphics card support… {int(frac * 100)}%"
+        self.update_status()
+
+    def on_gpu_done(self, error):
+        self.downloading = None
+        self.model_note = ""
+        self.gpu_box.setEnabled(True)
+        self.accuracy.setEnabled(True)
+        if error is not None:
+            self.gpu_box.blockSignals(True)
+            self.gpu_box.setChecked(False)
+            self.gpu_box.blockSignals(False)
+            self.update_status()
+            self.popup("Download failed", f"{error}\n\nCheck your internet and try again.")
+            return
+        self.s.use_gpu = True
+        self.s.save()
+        self.popup("Graphics card ready", "Downloaded! Word Counter will now restart to use your graphics card.")
+        self.restart()
+
+    def restart(self):
+        from PySide6.QtCore import QProcess
+        if getattr(sys, "frozen", False):
+            QProcess.startDetached(sys.executable, [])
+        else:
+            QProcess.startDetached(sys.executable, [str(resource_dir() / "main.py")])
+        self.close()
+
+    def clean_old_installers(self):
+        """Delete installers left behind by earlier updates (about 250 MB each)."""
+        import tempfile
+        from pathlib import Path
+        folder = Path(tempfile.gettempdir()) / "WordCounter-update"
+        freed = 0
+        for f in folder.glob("*"):
+            try:
+                size = f.stat().st_size
+                f.unlink()
+                freed += size
+            except OSError:
+                pass                     # still in use - next start will get it
+        if freed:
+            log.info("removed old update installers (%.0f MB)", freed / 1e6)
 
     # ------------------------------------------------------------------ updates
     def check_updates(self, quiet: bool):

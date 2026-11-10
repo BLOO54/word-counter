@@ -39,6 +39,7 @@ class Settings:
     show_text: bool = True
     similar: bool = True
     accuracy: str = "fast"
+    use_gpu: bool = False
     geometry: str = ""
 
     @classmethod

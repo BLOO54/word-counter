@@ -124,3 +124,10 @@ def test_listener_has_every_source():
     from wordcounter.audio import Listener
     for name in ("run", "_run_mic", "_run_discord", "_open"):
         assert callable(getattr(Listener, name, None)), name
+
+
+def test_gpu_version_pick():
+    from wordcounter import gpu
+    assert gpu._version_key("12.4.5.8") > gpu._version_key("12.4.2.65")
+    assert gpu._version_key("9.10.2.21") > gpu._version_key("9.9.0")
+    assert gpu.has_nvidia_driver() in (True, False)
