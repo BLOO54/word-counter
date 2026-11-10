@@ -42,6 +42,7 @@ class Settings:
     use_gpu: bool = False
     milestone: int = 0
     careful: bool = False
+    sensitive: bool = False
     overlay: bool = False
     overlay_corner: str = "top-right"
     overlay_size: str = "small"

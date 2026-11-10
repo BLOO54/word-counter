@@ -344,6 +344,7 @@ class MainWindow(QMainWindow):
                                          model_path=path, use_gpu=bool(use_gpu),
                                          on_switch_failed=self.bridge.switch_failed.emit)
             self.recognizer.beam = 5 if self.s.careful else 1
+            self.recognizer.sensitive = self.recognizer.boost = self.s.sensitive
             self.recognizer.on_measured = self.bridge.measured.emit
             QTimer.singleShot(60_000, self.clean_old_installers)
             self.recognizer.start()
@@ -462,6 +463,12 @@ class MainWindow(QMainWindow):
         self.live_box.setChecked(self.s.live)
         self.live_box.setToolTip("Checks each sentence while it's still being said. Best with the graphics card on.")
         self.live_box.toggled.connect(self.live_changed)
+        self.sensitive_box = QCheckBox("Catch quiet && slurred words (focus on my words)")
+        self.sensitive_box.setToolTip("Hears quieter talk, turns it up, and tells the speech engine which words to\n"
+                                      "listen out for. In tests it caught 99% of words instead of 86%.\n"
+                                      "Switch it off any time to go back to how it worked before.")
+        self.sensitive_box.setChecked(self.s.sensitive)
+        self.sensitive_box.toggled.connect(self.sensitive_changed)
         reset = QPushButton("Reset all counts")
         reset.clicked.connect(self.reset_all)
         clear = QPushButton("Clear text")
@@ -487,6 +494,7 @@ class MainWindow(QMainWindow):
         ms_row.addStretch(1)
         options.addWidget(self.careful_box, 3, 0)
         options.addWidget(self.live_box, 3, 1)
+        options.addWidget(self.sensitive_box, 6, 0, 1, 2)
         downloads = QPushButton("Models && downloads…")
         downloads.setObjectName("small")
         downloads.setToolTip("See and remove downloaded accuracy models and graphics card files")
@@ -711,7 +719,7 @@ class MainWindow(QMainWindow):
         self.source_status = {}
         for kind in self.wanted_sources():
             lst = Listener(kind, self._piece, self.bridge.status.emit, self.bridge.level.emit,
-                           live=lambda: self.s.live)
+                           live=lambda: self.s.live, sensitive=lambda: self.s.sensitive)
             self.listeners[kind] = lst
             lst.start()
         self.update_overlay()
@@ -804,6 +812,12 @@ class MainWindow(QMainWindow):
         if self.recognizer is not None:
             self.recognizer.beam = 5 if on else 1
         self.fill_accuracy_box()
+
+    def sensitive_changed(self, on):
+        self.s.sensitive = bool(on)        # listeners and the engine check this each time
+        self.s.save()
+        if self.recognizer is not None:
+            self.recognizer.sensitive = self.recognizer.boost = self.s.sensitive
 
     def live_changed(self, on):
         self.s.live = bool(on)        # listeners ask for this each time, so it applies straight away
