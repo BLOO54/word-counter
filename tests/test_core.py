@@ -60,3 +60,34 @@ def test_segmenter_ignores_silence():
     for _ in range(100):
         seg.add(np.zeros(FRAME, np.float32))
     assert pieces == []
+
+
+from wordcounter import updater  # noqa: E402
+
+
+def test_version_compare():
+    assert updater.is_newer("v1.1.0", "1.0.0")
+    assert updater.is_newer("1.10.0", "1.9.3")
+    assert not updater.is_newer("v1.1.0", "1.1.0")
+    assert not updater.is_newer("1.0.9", "1.1")
+
+
+def test_check_latest_reads_github_answer():
+    import io
+    import json
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    answer = {"tag_name": "v9.0.0", "html_url": "https://example/rel", "body": "What's new: faster",
+              "assets": [{"name": "WordCounter-Portable-9.0.0.zip", "browser_download_url": "z", "size": 1},
+                         {"name": "WordCounter-Setup-9.0.0.exe", "browser_download_url": "https://x/s.exe",
+                          "size": 123, "digest": "sha256:ABC"}]}
+    info = updater.check_latest("1.1.0", opener=lambda req, timeout: Resp(json.dumps(answer).encode()))
+    assert info.version == "9.0.0" and info.installer_name.endswith(".exe") and info.sha256 == "abc"
+    assert updater.whats_new(info) == "faster"
+    assert updater.check_latest("9.0.0", opener=lambda req, timeout: Resp(json.dumps(answer).encode())) is None

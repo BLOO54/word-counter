@@ -75,7 +75,7 @@ jobs:
           $voice.Speak("Bro, come over here and look at this. I ordered another pizza.")
           $voice.SetOutputToNull()
           $exe = "dist\WordCounter\WordCounter.exe"
-          $p = Start-Process $exe -ArgumentList "--hear-test","$PWD\ci-hear.wav","$PWD\ci-hear.json","--words","bro,pizza,no way" -PassThru
+          $p = Start-Process $exe -ArgumentList "--hear-test","$PWD\ci-hear.wav","$PWD\ci-hear.json","--words","`"bro,pizza,no way`"" -PassThru
           if (-not $p.WaitForExit(300000)) { Stop-Process $p -Force; throw "hearing test took too long" }
           if (-not (Test-Path ci-hear.json)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "no hearing report" }
           Get-Content ci-hear.json
@@ -115,6 +115,30 @@ jobs:
           $r = Start-Process "$dir\WordCounter.exe" -ArgumentList "--self-test","--report","$PWD\selftest-installed.txt" -Wait -PassThru
           Get-Content selftest-installed.txt
           if ($r.ExitCode -ne 0) { throw "installed app self-test failed" }
+          if (-not (Test-Path "$dir\unins000.exe")) { throw "no uninstaller - the Update button would not work" }
+
+      - name: Test an in-app style update (silent reinstall + automatic restart)
+        timeout-minutes: 6
+        run: |
+          $setup = Get-ChildItem Output\WordCounter-Setup-*.exe | Select-Object -First 1
+          $dir = "$env:LOCALAPPDATA\Programs\Word Counter"
+          $app = Start-Process "$dir\WordCounter.exe" -PassThru
+          Start-Sleep -Seconds 8
+          # exactly what the Update button runs
+          $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CLOSEAPPLICATIONS","/FORCECLOSEAPPLICATIONS","/RESTARTAPP=1" -PassThru
+          if (-not $p.WaitForExit(180000)) { throw "update install did not finish" }
+          "installer exit code: $($p.ExitCode)"
+          Start-Sleep -Seconds 6
+          $running = Get-Process WordCounter -ErrorAction SilentlyContinue
+          "app running again after update: $([bool]$running)"
+          if (-not $running) { throw "app did not restart after the update" }
+          $running | Stop-Process -Force
+
+      - name: Can the app see the latest release on GitHub (info only)
+        continue-on-error: true
+        run: |
+          python -c "from wordcounter import updater as U; i=U.check_latest('0.0.1'); print('latest release:', i.version, i.installer_name, i.size, 'bytes, sha256:', bool(i.sha256))"
+          $global:LASTEXITCODE = 0
 
       - name: Portable zip
         run: Compress-Archive -Path dist\WordCounter\* -DestinationPath "Output\WordCounter-Portable-${{ steps.ver.outputs.version }}.zip"
@@ -150,6 +174,7 @@ jobs:
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.
             If Windows says "Windows protected your PC", click **More info → Run anyway** (the app isn't paid-signed).
+            **Already have Word Counter 1.1.0 or newer?** Just click the Update button in the app.
             No admin rights needed. Prefer no installer? Download the Portable zip, extract it, and run `WordCounter.exe`.
 
-            Latest change: ${{ steps.ver.outputs.notes }}
+            What's new: ${{ steps.ver.outputs.notes }}

@@ -41,6 +41,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "Start {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+; after an in-app update (silent install started with /RESTARTAPP=1) start the new version again
+Filename: "{app}\{#MyAppExe}"; Flags: nowait; Check: ShouldRelaunch
+
+[Code]
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RESTARTAPP|0}') = '1';
+end;
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExe} /F"; Flags: runhidden; RunOnceId: "KillApp"

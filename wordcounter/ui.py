@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, APP_VERSION, matching
+from . import APP_NAME, APP_VERSION, matching, updater
 from .audio import Listener
 from .config import Settings, resource_dir
 from .recognizer import Recognizer
@@ -65,6 +65,9 @@ class Bridge(QObject):
     ready = Signal(object)
     status = Signal(str, str)
     level = Signal(str, float)
+    update_result = Signal(object, bool)
+    update_progress = Signal(float)
+    update_downloaded = Signal(object)
 
 
 class WordCard(QFrame):
@@ -126,6 +129,8 @@ class MainWindow(QMainWindow):
         self.source_status: dict[str, str] = {}
         self.cards: list[WordCard] = []
         self._lock = threading.Lock()
+        self.update_info = None
+        self._update_busy = False
 
         self.setWindowTitle(APP_NAME)
         icon = resource_dir() / "assets" / "icon.png"
@@ -146,10 +151,18 @@ class MainWindow(QMainWindow):
         self.bridge.ready.connect(self.on_ready)
         self.bridge.status.connect(self.on_status)
         self.bridge.level.connect(self.on_level)
+        self.bridge.update_result.connect(self.on_update_result)
+        self.bridge.update_progress.connect(self.on_update_progress)
+        self.bridge.update_downloaded.connect(self.on_update_downloaded)
         self.recognizer = None
         if start_engine:
             self.recognizer = Recognizer(self.bridge.heard.emit, self.bridge.ready.emit, self.hotwords)
             self.recognizer.start()
+            # quietly look for a new version a few seconds after start, then every few hours
+            QTimer.singleShot(4000, lambda: self.check_updates(quiet=True))
+            self.update_timer = QTimer(self)
+            self.update_timer.timeout.connect(lambda: self.check_updates(quiet=True))
+            self.update_timer.start(updater.CHECK_EVERY_HOURS * 3600 * 1000)
         self.update_status()
 
     # ------------------------------------------------------------------ layout
@@ -239,10 +252,16 @@ class MainWindow(QMainWindow):
         bottom.addWidget(clear)
         lay.addLayout(bottom)
 
+        foot = QHBoxLayout()
         ver = QLabel(f"v{APP_VERSION} · speech recognition runs on your PC, nothing is uploaded")
         ver.setObjectName("muted")
         ver.setStyleSheet("font-size: 11px;")
-        lay.addWidget(ver)
+        self.update_btn = QPushButton("⟳  Check for updates")
+        self.update_btn.setObjectName("small")
+        self.update_btn.clicked.connect(self.update_clicked)
+        foot.addWidget(ver, 1)
+        foot.addWidget(self.update_btn)
+        lay.addLayout(foot)
 
         self.setCentralWidget(root)
         self.rebuild_cards()
@@ -444,6 +463,105 @@ class MainWindow(QMainWindow):
             self.s.always_on_top = bool(on)
             self.s.save()
             self.show()
+
+    # ------------------------------------------------------------------ updates
+    def check_updates(self, quiet: bool):
+        """Ask GitHub for a newer version in the background."""
+        if self._update_busy:
+            return
+        self._update_busy = True
+        if not quiet:
+            self.update_btn.setText("Checking…")
+            self.update_btn.setEnabled(False)
+
+        def work():
+            try:
+                self.bridge.update_result.emit(updater.check_latest(), quiet)
+            except Exception as e:
+                self.bridge.update_result.emit(e, quiet)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_update_result(self, result, quiet: bool):
+        self._update_busy = False
+        self.update_btn.setEnabled(True)
+        if isinstance(result, Exception):
+            log.info("update check failed: %s", result)
+            self.update_btn.setText("⟳  Check for updates")
+            if not quiet:
+                self.popup("Couldn't check for updates", f"{result}\n\nCheck your internet and try again.")
+            return
+        if result is None:
+            self.update_btn.setText("✔  Up to date")
+            QTimer.singleShot(4000, lambda: self.update_btn.setText("⟳  Check for updates")
+                              if self.update_info is None else None)
+            return
+        self.update_info = result
+        self.update_btn.setText(f"⬆  Update to {result.version}")
+        self.update_btn.setObjectName("primary")
+        self._restyle(self.update_btn)
+        if not quiet:
+            self.offer_update()
+
+    def update_clicked(self):
+        if self.update_info is None:
+            self.check_updates(quiet=False)
+        else:
+            self.offer_update()
+
+    def offer_update(self):
+        from PySide6.QtWidgets import QMessageBox
+        info = self.update_info
+        if updater.install_mode() != "installed":
+            self.popup("Update available",
+                       f"Version {info.version} is out, but this copy wasn't installed with the "
+                       f"installer, so it can't update itself.\n\nDownload it here:\n{info.page_url}")
+            return
+        new = updater.whats_new(info)
+        mb = f" ({info.size / 1e6:.0f} MB)" if info.size else ""
+        text = (f"Version {info.version} is available (you have {APP_VERSION}).\n\n"
+                + (f"What's new: {new}\n\n" if new else "")
+                + f"Download and install it now{mb}? Your words and counts are kept, "
+                  "and Word Counter restarts by itself.")
+        box = QMessageBox(QMessageBox.Question, "Update Word Counter", text,
+                          QMessageBox.Yes | QMessageBox.No, self)
+        box.button(QMessageBox.Yes).setText("Update now")
+        box.button(QMessageBox.No).setText("Later")
+        if box.exec() == QMessageBox.Yes:
+            self.start_download()
+
+    def start_download(self):
+        info = self.update_info
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("Downloading… 0%")
+
+        def work():
+            try:
+                path = updater.download(info, progress=lambda f: self.bridge.update_progress.emit(f))
+                self.bridge.update_downloaded.emit(path)
+            except Exception as e:
+                self.bridge.update_downloaded.emit(e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_update_progress(self, frac: float):
+        self.update_btn.setText(f"Downloading… {int(frac * 100)}%")
+
+    def on_update_downloaded(self, result):
+        self.update_btn.setEnabled(True)
+        if isinstance(result, Exception):
+            self.update_btn.setText(f"⬆  Update to {self.update_info.version}")
+            self.popup("Update failed", f"{result}\n\nYou can try again with the Update button.")
+            return
+        self.update_btn.setText("Installing…")
+        try:
+            updater.launch_installer(result)
+        except Exception as e:
+            self.popup("Update failed", f"Couldn't start the installer: {e}")
+            return
+        QTimer.singleShot(800, self.close)        # get out of the installer's way
+
+    def popup(self, title: str, text: str):
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(self, title, text)
 
     @staticmethod
     def _restyle(w):
