@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, APP_VERSION, gpu, matching, models, updater
+from . import APP_NAME, APP_VERSION, gpu, matching, models, stats, updater
 from .audio import Listener
 from .config import SOURCE_PARTS, Settings, resource_dir
 from .recognizer import Recognizer
@@ -123,6 +123,27 @@ class WordCard(QFrame):
             self.style().polish(self)
         except RuntimeError:       # card was rebuilt in the meantime
             pass
+
+
+class Toast(QLabel):
+    """A small pop-up in the bottom-right corner of the screen. It never takes focus and clicks
+    go straight through it, so it can't interrupt a game."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                            | Qt.WindowDoesNotAcceptFocus | Qt.WindowTransparentForInput)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet(f"QLabel {{ background: {GRADIENT}; color: white; font-family: 'Segoe UI'; "
+                           "font-size: 20px; font-weight: 700; padding: 14px 22px; border-radius: 14px; }")
+        self.adjustSize()
+
+    def show_for(self, ms: int):
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.move(screen.right() - self.width() - 24, screen.bottom() - self.height() - 24)
+        self.show()
+        QTimer.singleShot(ms, self.close)
 
 
 class MainWindow(QMainWindow):
@@ -304,6 +325,18 @@ class MainWindow(QMainWindow):
         options.addWidget(self.text_box, 1, 0)
         options.addWidget(self.similar_box, 1, 1)
         options.addWidget(self.gpu_box, 2, 0, 1, 2)
+        ms_row = QHBoxLayout()
+        ms_lbl = QLabel("Milestone alert:")
+        ms_lbl.setObjectName("muted")
+        self.milestone_box = QComboBox()
+        for n in stats.MILESTONES:
+            self.milestone_box.addItem("Off" if n == 0 else f"every {n}", n)
+        self.milestone_box.setCurrentIndex(list(stats.MILESTONES).index(self.s.milestone))
+        self.milestone_box.currentIndexChanged.connect(self.milestone_changed)
+        ms_row.addWidget(ms_lbl)
+        ms_row.addWidget(self.milestone_box)
+        ms_row.addStretch(1)
+        options.addLayout(ms_row, 3, 0, 1, 2)
         bottom.addLayout(options)
         bottom.addStretch(1)
         bottom.addWidget(reset)
@@ -388,9 +421,13 @@ class MainWindow(QMainWindow):
             self.transcript.append((source, text))
             self.transcript = self.transcript[-60:]
         hit = False
+        milestones = []
         for i, w in enumerate(self.s.words):
             n = matching.count(text, w["text"], self.s.similar)
             if n:
+                reached = stats.crossed_milestone(w["count"], w["count"] + n, self.s.milestone)
+                if reached:
+                    milestones.append((w["text"], reached))
                 w["count"] += n
                 hit = True
                 if i < len(self.cards):
@@ -400,10 +437,29 @@ class MainWindow(QMainWindow):
             log.info("counted from %s: %s", source,
                      ", ".join(f"{w['text']}={w['count']}" for w in self.s.words))
             self.s.save()
-            if self.s.beep:
+            if milestones:
+                self.celebrate(milestones)
+            elif self.s.beep:
                 self.beep()
         if self.s.show_text:
             self.render_transcript()
+
+    def celebrate(self, reached: list[tuple[str, int]]):
+        """Milestone: a rising 3-note sound and a pop-up that shows even over a game."""
+        text = "   ".join(f"🎉 “{w}” hit {n}!" for w, n in reached)
+        if sys.platform == "win32":
+            def go():
+                try:
+                    import winsound
+                    for f in (660, 880, 1175):
+                        winsound.Beep(f, 120)
+                except Exception:
+                    pass
+            threading.Thread(target=go, daemon=True).start()
+        else:
+            QApplication.beep()
+        self.toast = Toast(text)
+        self.toast.show_for(3500)
 
     def render_transcript(self):
         phrases = [w["text"] for w in self.s.words]
@@ -532,6 +588,10 @@ class MainWindow(QMainWindow):
         if save:
             self.s.show_text = on
             self.s.save()
+
+    def milestone_changed(self, _i):
+        self.s.milestone = int(self.milestone_box.currentData())
+        self.s.save()
 
     def similar_changed(self, on):
         self.s.similar = bool(on)

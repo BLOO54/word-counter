@@ -131,3 +131,11 @@ def test_gpu_version_pick():
     assert gpu._version_key("12.4.5.8") > gpu._version_key("12.4.2.65")
     assert gpu._version_key("9.10.2.21") > gpu._version_key("9.9.0")
     assert gpu.has_nvidia_driver() in (True, False)
+
+
+def test_milestones():
+    from wordcounter import stats
+    assert stats.crossed_milestone(48, 51, 25) == 50
+    assert stats.crossed_milestone(9, 10, 10) == 10
+    assert stats.crossed_milestone(10, 11, 10) is None
+    assert stats.crossed_milestone(3, 99, 0) is None

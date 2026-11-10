@@ -227,7 +227,7 @@ def main() -> int:
 
     if args.screenshot:                       # example window for the build check
         s = Settings(words=[{"text": "bro", "count": 12}, {"text": "no way", "count": 3},
-                            {"text": "skibidi", "count": 7}], beep=True)
+                            {"text": "skibidi", "count": 7}], beep=True, milestone=25)
         s.save = lambda: None                 # don't touch the real settings
         win = MainWindow(s, start_engine=False)
         win.on_ready(None)
@@ -238,7 +238,11 @@ def main() -> int:
 
         def shot():
             win.grab().save(args.screenshot)
-            app.quit()
+            from wordcounter.ui import Toast
+            t = Toast("🎉 “bro” hit 25!")
+            t.show_for(3000)
+            QTimer.singleShot(300, lambda: (t.grab().save(args.screenshot.replace(".png", "-milestone.png")),
+                                            app.quit()))
         QTimer.singleShot(int((args.quit_after or 2) * 1000), shot)
         return app.exec()
 

@@ -40,6 +40,7 @@ class Settings:
     similar: bool = True
     accuracy: str = "fast"
     use_gpu: bool = False
+    milestone: int = 0
     geometry: str = ""
 
     @classmethod
@@ -60,6 +61,8 @@ class Settings:
                    for w in s.words if isinstance(w, dict) and str(w.get("text", "")).strip()]
         if s.source not in SOURCES:
             s.source = "mic"
+        if s.milestone not in (0, 10, 25, 50, 100):
+            s.milestone = 0
         if s.accuracy not in ("fast", "better", "best"):
             s.accuracy = "fast"
         return s

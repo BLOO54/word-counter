@@ -125,6 +125,7 @@ jobs:
           $exe = "dist\WordCounter\WordCounter.exe"
           $p = Start-Process $exe -ArgumentList "--screenshot","$PWD\window.png","--quit-after","3" -Wait -PassThru
           if (-not (Test-Path window.png)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "window did not open" }
+          if (-not (Test-Path window-milestone.png)) { throw "milestone pop-up did not show" }
 
       - name: Can the app hear sound devices (info only - build machines have none)
         continue-on-error: true
@@ -210,6 +211,7 @@ jobs:
           files: |
             Output/WordCounter-Setup-*.exe
             window.png
+            window-milestone.png
             ci-hear.json
             ci-listen.json
             ci-hear-better.json
