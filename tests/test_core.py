@@ -122,7 +122,7 @@ def test_highlight_similar():
 
 def test_listener_has_every_source():
     from wordcounter.audio import Listener
-    for name in ("run", "_run_mic", "_run_discord", "_open"):
+    for name in ("run", "_run_mic", "_run_app", "_open"):
         assert callable(getattr(Listener, name, None)), name
 
 
@@ -179,3 +179,13 @@ def test_vram_text():
     assert vram.model_vram_text("best", {}, careful=True) == "~2.0 GB"
     assert vram.model_vram_text("max", {"max": 3_120_000_000}) == "3.1 GB (measured)"
     assert vram.card_memory() is None or len(vram.card_memory()) == 2
+
+
+def test_every_source_is_known():
+    from wordcounter.audio import APPS, Listener
+    from wordcounter.config import SOURCE_PARTS, SOURCES
+    assert set(SOURCES) == set(SOURCE_PARTS)
+    for parts in SOURCE_PARTS.values():
+        for kind in parts:
+            assert kind in Listener.NAMES and (kind in APPS or kind in ("mic", "pc"))
+    assert callable(getattr(Listener, "_run_app", None))

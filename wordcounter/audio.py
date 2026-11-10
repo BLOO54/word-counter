@@ -127,13 +127,23 @@ def _com_init() -> None:
 DISCORD_EXES = ("Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe")
 
 
-def find_discord() -> int | None:
+APPS = {                      # sources that record ONE app: kind -> (name, its .exe files)
+    "discord": ("Discord", DISCORD_EXES),
+    "spotify": ("Spotify", ("Spotify.exe",)),
+}
+
+
+def find_app(kind: str) -> int | None:
     from .app_audio import find_app_pid
-    for exe in DISCORD_EXES:
+    for exe in APPS[kind][1]:
         pid = find_app_pid(exe)
         if pid:
             return pid
     return None
+
+
+def find_discord() -> int | None:
+    return find_app("discord")
 
 
 def run_probe(pid: int, timeout: float = 25.0) -> dict:
@@ -167,9 +177,9 @@ def run_probe(pid: int, timeout: float = 25.0) -> dict:
 
 
 class Listener(threading.Thread):
-    """Records one sound source ('mic', 'pc' or 'discord') until stopped, feeding a Segmenter."""
+    """Records one sound source ('mic', 'pc', 'discord' or 'spotify') until stopped, feeding a Segmenter."""
 
-    NAMES = {"mic": "your microphone", "pc": "PC sound", "discord": "Discord"}
+    NAMES = {"mic": "your microphone", "pc": "PC sound", "discord": "Discord", "spotify": "Spotify"}
 
     def __init__(self, kind: str, on_piece: Callable[[str, np.ndarray, int, bool], None],
                  on_status: Callable[[str, str], None], on_level: Callable[[str, float], None],
@@ -189,8 +199,8 @@ class Listener(threading.Thread):
         warnings.filterwarnings("ignore", message=".*discontinuity.*")
         seg = Segmenter(adaptive=(self.kind == "mic"), live=self.live,
                         on_piece=lambda pid, a, final: self.on_piece(self.kind, a, pid, final))
-        if self.kind in ("discord", "mic"):         # these talk to Windows directly (no soundcard)
-            (self._run_discord if self.kind == "discord" else self._run_mic)(seg)
+        if self.kind in APPS or self.kind == "mic":   # these talk to Windows directly (no soundcard)
+            (self._run_app if self.kind in APPS else self._run_mic)(seg)
             self.on_status(self.kind, "stopped")
             return
         try:
@@ -283,39 +293,41 @@ class Listener(threading.Thread):
                 self.on_status(self.kind, f"the microphone won't start - retrying… ({describe(e)})")
                 self._halt.wait(3)
 
-    def _run_discord(self, seg: "Segmenter") -> None:
+    def _run_app(self, seg: "Segmenter") -> None:
+        """Record just one app (Discord or Spotify), waiting for it to open if needed."""
         from .app_audio import AppAudio
+        name = APPS[self.kind][0]
         checked: dict[int, dict] = {}
         while not self._halt.is_set():
-            pid = find_discord()
+            pid = find_app(self.kind)
             if not pid:
-                self.on_status(self.kind, "waiting for Discord to open…")
+                self.on_status(self.kind, f"waiting for {name} to open…")
                 self._halt.wait(3)
                 continue
             if pid not in checked:
                 self.on_status(self.kind, "connecting…")
                 checked[pid] = run_probe(pid)
-                log.info("Discord-only check: %s", checked[pid])
+                log.info("%s-only check: %s", name, checked[pid])
             if not checked[pid].get("ok"):
-                self.on_status(self.kind, "Windows won't let me hear Discord by itself "
-                               f"({checked[pid].get('error')}). Try “PC sound” instead.")
+                self.on_status(self.kind, f"Windows won't let me hear {name} by itself "
+                               f"({checked[pid].get('error')}). Try “All PC sound” instead.")
                 self._halt.wait(5)
                 continue
             try:
                 with AppAudio(pid) as src:
-                    self.on_status(self.kind, "listening (Discord only)")
+                    self.on_status(self.kind, f"listening ({name} only)")
                     checks = 0
                     while not self._halt.is_set():
                         frame = src.read(FRAME)
                         seg.add(frame)
                         self.on_level(self.kind, float(np.abs(frame).max()) if frame.size else 0.0)
                         checks += 1
-                        if checks % 50 == 0 and find_discord() != pid:
-                            log.info("Discord restarted or closed")
+                        if checks % 50 == 0 and find_app(self.kind) != pid:
+                            log.info("%s restarted or closed", name)
                             break
             except Exception as e:
-                log.warning("Discord listener: %s", e)
-                self.on_status(self.kind, f"lost Discord's sound - retrying… ({e})")
+                log.warning("%s listener: %s", name, e)
+                self.on_status(self.kind, f"lost {name}'s sound - retrying… ({e})")
                 self._halt.wait(3)
 
 

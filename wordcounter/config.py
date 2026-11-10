@@ -11,9 +11,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SOURCES = ("mic", "discord_mic", "discord", "pc", "both")
+SOURCES = ("mic", "discord_mic", "discord", "pc", "both", "spotify")
 SOURCE_PARTS = {"mic": ["mic"], "discord_mic": ["discord", "mic"], "discord": ["discord"],
-                "pc": ["pc"], "both": ["pc", "mic"]}
+                "pc": ["pc"], "both": ["pc", "mic"], "spotify": ["spotify"]}
 
 
 def app_data_dir() -> Path:

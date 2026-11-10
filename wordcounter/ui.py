@@ -59,8 +59,9 @@ SOURCE_LABELS = [
     ("discord", "💬  Discord only"),
     ("pc", "🔊  All PC sound (Discord, games, videos)"),
     ("both", "🔊+🎤  All PC sound + my microphone"),
+    ("spotify", "🎵  Spotify only (for testing)"),
 ]
-SOURCE_TAGS = {"mic": "🎤 ", "discord": "💬 ", "pc": "🔊 "}
+SOURCE_TAGS = {"mic": "🎤 ", "discord": "💬 ", "pc": "🔊 ", "spotify": "🎵 "}
 
 
 class Bridge(QObject):

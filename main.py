@@ -172,7 +172,7 @@ def main() -> int:
                 statuses.setdefault(kind, []).append(text)
         crashes = []
         threading.excepthook = lambda a: crashes.append(f"{a.thread.name}: {a.exc_type.__name__}: {a.exc_value}")
-        kinds = ["pc", "mic", "discord"]
+        kinds = ["pc", "mic", "discord", "spotify"]
         for kind in kinds:
             Listener(kind, lambda *a: None, status, lambda k, v: None).start()
         time.sleep(6)
