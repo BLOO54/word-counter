@@ -131,6 +131,33 @@ jobs:
           if ($r.error) { throw "graphics card download failed: $($r.error)" }
           foreach ($d in "cublas64_12.dll", "cudnn64_9.dll") { if ($r.dll_loads.$d -ne "ok") { throw "$d won't load: $($r.dll_loads.$d)" } }
 
+      - name: Accuracy benchmark - current way vs "catch quiet & slurred words" (only when asked)
+        if: contains(github.event.head_commit.message, '[bench]')
+        timeout-minutes: 40
+        run: |
+          $dir = "$env:RUNNER_TEMP\bench"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Add-Type -AssemblyName System.Speech
+          $voice = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+          $lines = (python tools/bench.py lines) -split "`n" | Where-Object { $_.Trim() }
+          foreach ($rate in @(@("normal", 0), @("fast", 6))) {
+            $voice.Rate = $rate[1]
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              $voice.SetOutputToWaveFile("$dir\raw_$($rate[0])_$i.wav", $fmt); $voice.Speak($lines[$i].Trim()); $voice.SetOutputToNull()
+            }
+          }
+          python tools/bench.py prepare $dir
+          $exe = "dist\WordCounter\WordCounter.exe"
+          $p = Start-Process $exe -ArgumentList "--bench",$dir,"$PWD\ci-bench.json","--model","better" -PassThru
+          if (-not $p.WaitForExit(2100000)) { Stop-Process $p -Force; throw "benchmark took too long" }
+          if (-not (Test-Path ci-bench.json)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "no benchmark report" }
+          $r = Get-Content ci-bench.json -Raw | ConvertFrom-Json
+          foreach ($c in $r.results.PSObject.Properties) {
+            "{0,-10} caught {1}/{2} ({3}%)  wrong extra counts: {4}  took {5}s" -f $c.Name, $c.Value.caught, $c.Value.of, $c.Value.pct, $c.Value.wrong_extra_counts, $c.Value.seconds
+            foreach ($f in $c.Value.files.PSObject.Properties) { "     {0,-22} {1}/{2}  extra {3}" -f $f.Name, $f.Value.caught, $f.Value.of, $f.Value.extra }
+          }
+
       - name: Picture of the window
         run: |
           $exe = "dist\WordCounter\WordCounter.exe"
@@ -231,6 +258,7 @@ jobs:
             ci-listen.json
             ci-hear-better.json
             ci-hear-live.json
+            ci-bench.json
             ci-gpu.json
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.

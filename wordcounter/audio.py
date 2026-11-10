@@ -31,7 +31,8 @@ class Segmenter:
 
     def __init__(self, emit: Callable[[np.ndarray], None] | None = None, adaptive: bool = True,
                  on_piece: Callable[[int, np.ndarray, bool], None] | None = None,
-                 live: Callable[[], bool] = lambda: False, live_every: int = LIVE_EVERY):
+                 live: Callable[[], bool] = lambda: False, live_every: int = LIVE_EVERY,
+                 sensitive: Callable[[], bool] = lambda: False):
         """emit(audio) gets each finished piece. Or on_piece(piece_id, audio, final) gets finished
         pieces (final=True) AND, while live() is true, the piece-so-far every `live_every` frames
         (final=False) - so words can be counted while someone is still talking."""
@@ -39,6 +40,7 @@ class Segmenter:
         self.on_piece = on_piece
         self.live = live
         self.live_every = live_every
+        self.sensitive = sensitive      # "catch quiet & slurred words": a much lower loudness cut-off
         self.piece_id = 0
         self.since_live = 0
         self.live_sent = False
@@ -50,6 +52,9 @@ class Segmenter:
         self.quiet = 0
 
     def threshold(self) -> float:
+        if self.sensitive():
+            # quiet talk gets through; the AI voice check later throws away pieces with no speech
+            return max(0.0025, self.floor * 1.8) if self.adaptive else 0.0015
         return max(0.006, self.floor * 2.5) if self.adaptive else 0.004
 
     def add(self, frame: np.ndarray) -> None:
@@ -183,13 +188,14 @@ class Listener(threading.Thread):
 
     def __init__(self, kind: str, on_piece: Callable[[str, np.ndarray, int, bool], None],
                  on_status: Callable[[str, str], None], on_level: Callable[[str, float], None],
-                 live: Callable[[], bool] = lambda: False):
+                 live: Callable[[], bool] = lambda: False, sensitive: Callable[[], bool] = lambda: False):
         super().__init__(daemon=True, name=f"listen-{kind}")
         self.kind = kind
         self.on_piece = on_piece
         self.on_status = on_status
         self.on_level = on_level
         self.live = live
+        self.sensitive = sensitive
         self._halt = threading.Event()
 
     def stop(self) -> None:
@@ -197,7 +203,7 @@ class Listener(threading.Thread):
 
     def run(self) -> None:
         warnings.filterwarnings("ignore", message=".*discontinuity.*")
-        seg = Segmenter(adaptive=(self.kind == "mic"), live=self.live,
+        seg = Segmenter(adaptive=(self.kind == "mic"), live=self.live, sensitive=self.sensitive,
                         on_piece=lambda pid, a, final: self.on_piece(self.kind, a, pid, final))
         if self.kind in APPS or self.kind == "mic":   # these talk to Windows directly (no soundcard)
             (self._run_app if self.kind in APPS else self._run_mic)(seg)

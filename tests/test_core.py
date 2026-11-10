@@ -189,3 +189,22 @@ def test_every_source_is_known():
         for kind in parts:
             assert kind in Listener.NAMES and (kind in APPS or kind in ("mic", "pc"))
     assert callable(getattr(Listener, "_run_app", None))
+
+
+def test_sensitive_mode_hears_quiet_speech():
+    quiet = np.concatenate([np.zeros(RATE, np.float32), _tone(1.0, 0.004), np.zeros(RATE, np.float32)])
+    for sens, want in ((False, 0), (True, 1)):
+        pieces = []
+        seg = Segmenter(pieces.append, adaptive=False, sensitive=lambda s=sens: s)
+        for i in range(0, len(quiet) - FRAME + 1, FRAME):
+            seg.add(quiet[i:i + FRAME])
+        assert len(pieces) == want
+
+
+def test_level_up_quiet_speech():
+    from wordcounter.recognizer import level_up
+    quiet = _tone(1.0, 0.01)
+    louder = level_up(quiet, [{"start": 0, "end": len(quiet)}])
+    assert 4 < np.abs(louder).max() / np.abs(quiet).max() <= 8.01
+    loud = _tone(1.0, 0.3)
+    assert np.array_equal(level_up(loud, [{"start": 0, "end": len(loud)}]), loud)   # normal talk untouched

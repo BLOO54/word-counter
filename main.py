@@ -142,6 +142,57 @@ def hear_test(wav: str, report: str, words: list[str], model_name: str = "fast",
     return 0
 
 
+def bench(folder: str, report: str, model_name: str = "better") -> int:
+    """Accuracy test: current way vs "catch quiet & slurred words" (with and without word hints)."""
+    from pathlib import Path
+    import wave
+    import numpy as np
+    from wordcounter import matching
+    from wordcounter.audio import FRAME, Segmenter
+    from wordcounter.models import ModelStore
+    from wordcounter.recognizer import load_model, transcribe
+
+    folder = Path(folder)
+    man = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    words, exp = man["words"], man["expected_per_file"]
+    store = ModelStore()
+    if model_name != "fast" and not store.installed(model_name):
+        store.download(model_name)
+    model = load_model(store.path(model_name) if model_name != "fast" else None)
+    configs = {"current": (False, False), "new": (True, False), "new+hints": (True, True)}
+    rep = {"model": model_name, "expected_per_file": exp, "results": {}}
+    for cfg, (sens, hints) in configs.items():
+        per_file, tot_caught, tot_exp, tot_extra = {}, 0, 0, 0
+        t = time.monotonic()
+        for f in man["files"]:
+            with wave.open(str(folder / f["file"]), "rb") as w:
+                audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
+            audio = np.concatenate([audio, np.zeros(16000, np.float32)])
+            pieces = []
+            seg = Segmenter(pieces.append, adaptive=False, sensitive=lambda s=sens: s)
+            for i in range(0, len(audio) - FRAME + 1, FRAME):
+                seg.add(audio[i:i + FRAME])
+            got = {w: 0 for w in words}
+            texts = []
+            for piece in pieces:
+                text = transcribe(model, piece, hotwords=", ".join(words) if hints else "", sensitive=sens)
+                texts.append(text)
+                for w in words:
+                    got[w] += matching.count(text, w, similar=True)
+            caught = sum(min(got[w], exp[w]) for w in words)
+            extra = sum(max(0, got[w] - exp[w]) for w in words)
+            total = sum(exp.values())
+            per_file[f["file"]] = {"caught": caught, "of": total, "extra": extra, "got": got,
+                                   "pieces": len(pieces), "texts": texts}
+            tot_caught, tot_exp, tot_extra = tot_caught + caught, tot_exp + total, tot_extra + extra
+        rep["results"][cfg] = {"caught": tot_caught, "of": tot_exp, "pct": round(100 * tot_caught / tot_exp, 1),
+                               "wrong_extra_counts": tot_extra, "seconds": round(time.monotonic() - t),
+                               "files": per_file}
+    with open(report, "w", encoding="utf-8") as fh:
+        json.dump(rep, fh, indent=2, ensure_ascii=False)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true")
@@ -156,6 +207,7 @@ def main() -> int:
     ap.add_argument("--app-audio-probe", nargs=2, metavar=("PID", "OUT"))
     ap.add_argument("--listen-test", metavar="REPORT")
     ap.add_argument("--gpu-test", metavar="REPORT")
+    ap.add_argument("--bench", nargs=2, metavar=("DIR", "REPORT"))
     args, _ = ap.parse_known_args()
 
     setup_logging()
@@ -183,6 +235,8 @@ def main() -> int:
             json.dump({"ok": ok, "crashes": crashes, "silent": missing, "statuses": statuses},
                       fh, indent=2, ensure_ascii=False)
         return 0
+    if args.bench:
+        return bench(args.bench[0], args.bench[1], args.model if args.model != "fast" else "better")
     if args.gpu_test:                         # build check: download + load NVIDIA's libraries
         import ctypes
         from wordcounter import gpu

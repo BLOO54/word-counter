@@ -43,11 +43,33 @@ def load_model(path=None, gpu: bool = False):
     return WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=threads)
 
 
-def transcribe(model, audio: np.ndarray, hotwords: str = "", beam: int = 1) -> str:
+def has_speech(audio: np.ndarray) -> list[dict]:
+    """Where an AI voice detector (Silero, built into faster-whisper) hears speech - however quiet."""
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+    return get_speech_timestamps(audio, VadOptions(threshold=0.35, min_speech_duration_ms=120,
+                                                   min_silence_duration_ms=300, speech_pad_ms=120))
+
+
+def level_up(audio: np.ndarray, spans: list[dict], target: float = 0.06, most: float = 8.0) -> np.ndarray:
+    """Make quiet speech louder (up to 8x) so the speech engine hears it as clearly as normal talk."""
+    speech = np.concatenate([audio[s["start"]:s["end"]] for s in spans]) if spans else audio
+    rms = float(np.sqrt(np.mean(speech * speech))) if speech.size else 0.0
+    if rms <= 1e-5 or rms >= target:
+        return audio
+    return np.clip(audio * min(most, target / rms), -1.0, 1.0).astype(np.float32)
+
+
+def transcribe(model, audio: np.ndarray, hotwords: str = "", beam: int = 1, sensitive: bool = False) -> str:
     """Audio (16 kHz mono float32) -> text. Skips bits that are probably not speech.
-    beam > 1 is "careful mode": compare several possible wordings and keep the best."""
+    beam > 1 is "careful mode": compare several possible wordings and keep the best.
+    sensitive: check there's a voice at all, then turn quiet speech up before listening."""
     if audio.size < 1600:          # under 0.1 s - nothing to hear
         return ""
+    if sensitive:
+        spans = has_speech(audio)
+        if not spans:
+            return ""
+        audio = level_up(audio, spans)
     kwargs = dict(language="en", beam_size=beam, vad_filter=False, without_timestamps=True,
                   condition_on_previous_text=False, temperature=0.0)
     if hotwords:
@@ -82,6 +104,8 @@ class Recognizer(threading.Thread):
         self.use_gpu = use_gpu
         self.on_gpu = False
         self.beam = 1                     # 5 = careful mode
+        self.sensitive = False            # "catch quiet & slurred words"
+        self.boost = False                # also hint your words to the engine (only if the tests show it helps)
         self._lock = threading.Lock()
         self._version = 0
         self._latest: dict = {}
@@ -180,7 +204,8 @@ class Recognizer(threading.Thread):
                 continue                    # a newer check of this sentence is already waiting
             try:
                 # no word hints: Whisper tends to skip hinted words at the start of a sentence
-                text = transcribe(self.model, audio, beam=self.beam)
+                text = transcribe(self.model, audio, beam=self.beam, sensitive=self.sensitive,
+                                  hotwords=self.get_hotwords() if self.sensitive and self.boost else "")
             except Exception:
                 log.exception("transcribing failed")
                 text = ""
