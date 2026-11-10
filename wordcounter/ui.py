@@ -125,18 +125,23 @@ class WordCard(QFrame):
             pass
 
 
-class Toast(QLabel):
+class Toast(QWidget):
     """A small pop-up in the bottom-right corner of the screen. It never takes focus and clicks
     go straight through it, so it can't interrupt a game."""
 
     def __init__(self, text: str):
-        super().__init__(text)
+        super().__init__()
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                             | Qt.WindowDoesNotAcceptFocus | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet(f"QLabel {{ background: {GRADIENT}; color: white; font-family: 'Segoe UI'; "
-                           "font-size: 20px; font-weight: 700; padding: 14px 22px; border-radius: 14px; }")
+        self.setAttribute(Qt.WA_TranslucentBackground)       # lets the corners be rounded
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.label = QLabel(text)                             # a child label paints its background
+        self.label.setStyleSheet(f"QLabel {{ background: {GRADIENT}; color: white; font-family: 'Segoe UI'; "
+                                 "font-size: 20px; font-weight: 700; padding: 14px 22px; "
+                                 "border-radius: 14px; }")
+        lay.addWidget(self.label)
         self.adjustSize()
 
     def show_for(self, ms: int):
