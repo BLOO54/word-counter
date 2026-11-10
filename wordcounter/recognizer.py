@@ -78,6 +78,7 @@ class Recognizer(threading.Thread):
         self.get_hotwords = get_hotwords
         self.model_path = model_path
         self.on_switch_failed = on_switch_failed
+        self.on_measured: Callable[[str, int], None] = lambda key, n: None
         self.use_gpu = use_gpu
         self.on_gpu = False
         self.beam = 1                     # 5 = careful mode
@@ -115,6 +116,10 @@ class Recognizer(threading.Thread):
     def _load(self, path, gpu: bool) -> str | None:
         """Load a model; returns None if it worked, otherwise the reason."""
         t = time.monotonic()
+        before = None
+        if gpu:
+            from .vram import card_memory
+            before = card_memory()
         try:
             self.model = load_model(path, gpu)
         except Exception as e:
@@ -122,6 +127,12 @@ class Recognizer(threading.Thread):
                         exc_info=True)
             return str(e) or type(e).__name__
         self.on_gpu = gpu
+        if before:
+            after = card_memory()
+            if after and after[0] > before[0]:
+                key = "fast" if path is None else getattr(path, "name", "")
+                log.info("model %s uses about %.2f GB of graphics memory", key, (after[0] - before[0]) / 1e9)
+                self.on_measured(key, after[0] - before[0])
         log.info("speech model %s loaded on the %s in %.1f s", getattr(path, "name", "base.en"),
                  "graphics card" if gpu else "processor", time.monotonic() - t)
         return None

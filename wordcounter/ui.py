@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, APP_VERSION, gpu, matching, models, stats, updater
+from . import APP_NAME, APP_VERSION, gpu, matching, models, stats, updater, vram
 from .audio import Listener
 from .config import SOURCE_PARTS, Settings, resource_dir
 from .recognizer import Recognizer
@@ -76,6 +76,7 @@ class Bridge(QObject):
     switch_failed = Signal(str, str)
     gpu_progress = Signal(float)
     gpu_done = Signal(object)
+    measured = Signal(str, object)
 
 
 class WordCard(QFrame):
@@ -152,50 +153,95 @@ class Toast(QWidget):
 
 
 class DownloadsDialog(QDialog):
-    """Lists everything Word Counter downloaded, with its size and a Remove button."""
+    """Every speech model with its download size and graphics memory (VRAM), plus Remove buttons."""
 
     def __init__(self, win: "MainWindow"):
         super().__init__(win)
         self.win = win
-        self.setWindowTitle("Downloads")
+        self.setWindowTitle("Models & downloads")
         self.setStyleSheet(STYLE)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(620)
         self.lay = QVBoxLayout(self)
         self.build()
 
     def build(self):
-        while self.lay.count():
-            item = self.lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                _clear_layout(item.layout())
-        title = QLabel("Downloaded extras")
+        _clear_layout(self.lay)
+        w = self.win
+        title = QLabel("Models & downloads")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         self.lay.addWidget(title)
-        rows = []
-        for key in models.ORDER:
-            if models.MODELS[key][0] is not None and self.win.store.installed(key):
-                rows.append((f"{models.MODELS[key][1]} accuracy model", self.win.store.path(key),
-                             lambda k=key: self.remove_model(k)))
-        if gpu.installed():
-            rows.append(("Graphics card support (NVIDIA files)", gpu.libs_dir(), self.remove_gpu))
+
+        card = vram.card_memory()
+        if card:
+            used, total = card
+            mine = w.s.vram_measured.get(w.s.accuracy) if (w.recognizer and w.recognizer.on_gpu) else None
+            line = f"Your graphics card: {vram.gb(used)} of {vram.gb(total)} in use"
+            if mine:
+                line += f"  (Word Counter ≈ {vram.gb(mine)})"
+        else:
+            line = "Graphics card memory can't be read on this PC - the numbers below are typical values."
+        top = QLabel(line)
+        top.setObjectName("muted")
+        top.setWordWrap(True)
+        self.lay.addWidget(top)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(8)
+        for col, head in enumerate(("Model", "Download", "Graphics memory", "Status", "")):
+            h = QLabel(head)
+            h.setObjectName("muted")
+            h.setStyleSheet("font-size: 12px; font-weight: 600;")
+            grid.addWidget(h, 0, col)
         total = 0
-        for label, path, fn in rows:
-            size = models.folder_size(path)
-            total += size
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label), 1)
-            sz = QLabel(f"{size / 1e9:.1f} GB" if size >= 1e9 else f"{size / 1e6:.0f} MB")
-            sz.setObjectName("muted")
-            row.addWidget(sz)
+        row = 1
+        for key in models.ORDER:
+            repo, label, size, about = models.MODELS[key]
+            installed = w.store.installed(key)
+            if repo is None:
+                dl = "built in"
+            elif installed:
+                n = models.folder_size(w.store.path(key))
+                total += n
+                dl = vram.gb(n) if n >= 1e9 else f"{n / 1e6:.0f} MB"
+            else:
+                dl = size
+            in_use = w.s.accuracy == key
+            status = ("in use" + (" (graphics card)" if w.recognizer and w.recognizer.on_gpu else " (processor)")
+                      if in_use else "downloaded" if installed else "not downloaded")
+            name = QLabel(label)
+            name.setStyleSheet("font-weight: 600;" + (f" color: {PINK};" if in_use else ""))
+            name.setToolTip(about)
+            grid.addWidget(name, row, 0)
+            grid.addWidget(QLabel(dl), row, 1)
+            grid.addWidget(QLabel(vram.model_vram_text(key, w.s.vram_measured, w.s.careful)), row, 2)
+            st = QLabel(status)
+            st.setObjectName("muted")
+            grid.addWidget(st, row, 3)
+            if repo is not None and installed:
+                b = QPushButton("Remove")
+                b.setObjectName("small")
+                b.clicked.connect(lambda _=False, k=key: self.remove_model(k))
+                grid.addWidget(b, row, 4)
+            row += 1
+        if gpu.installed():
+            n = models.folder_size(gpu.libs_dir())
+            total += n
+            grid.addWidget(QLabel("Graphics card support"), row, 0)
+            grid.addWidget(QLabel(vram.gb(n)), row, 1)
+            grid.addWidget(QLabel("-"), row, 2)
+            st = QLabel("in use" if w.s.use_gpu else "downloaded")
+            st.setObjectName("muted")
+            grid.addWidget(st, row, 3)
             b = QPushButton("Remove")
             b.setObjectName("small")
-            b.clicked.connect(fn)
-            row.addWidget(b)
-            self.lay.addLayout(row)
-        note = QLabel(f"Total: {total / 1e9:.1f} GB. Removed items can be downloaded again any time."
-                      if rows else "Nothing downloaded - only the built-in Fast model is on your PC.")
+            b.clicked.connect(self.remove_gpu)
+            grid.addWidget(b, row, 4)
+        self.lay.addLayout(grid)
+
+        note = QLabel(f"Downloads take {vram.gb(total)} on your PC. Graphics memory is only used while a model "
+                      "runs on the graphics card - on the processor it uses normal memory instead. "
+                      "Careful mode adds a little. Removed models can be downloaded again any time.")
         note.setObjectName("muted")
         note.setWordWrap(True)
         self.lay.addWidget(note)
@@ -279,6 +325,7 @@ class MainWindow(QMainWindow):
         self.bridge.switch_failed.connect(self.on_switch_failed)
         self.bridge.gpu_progress.connect(self.on_gpu_progress)
         self.bridge.gpu_done.connect(self.on_gpu_done)
+        self.bridge.measured.connect(self.on_measured)
         if start_engine:
             acc = self.s.accuracy
             path = self.store.path(acc) if acc != "fast" and self.store.installed(acc) else None
@@ -293,6 +340,7 @@ class MainWindow(QMainWindow):
                                          model_path=path, use_gpu=bool(use_gpu),
                                          on_switch_failed=self.bridge.switch_failed.emit)
             self.recognizer.beam = 5 if self.s.careful else 1
+            self.recognizer.on_measured = self.bridge.measured.emit
             QTimer.singleShot(60_000, self.clean_old_installers)
             self.recognizer.start()
             # quietly look for a new version a few seconds after start, then every few hours
@@ -432,7 +480,7 @@ class MainWindow(QMainWindow):
         ms_row.addStretch(1)
         options.addWidget(self.careful_box, 3, 0)
         options.addWidget(self.live_box, 3, 1)
-        downloads = QPushButton("Downloads…")
+        downloads = QPushButton("Models & downloads…")
         downloads.setObjectName("small")
         downloads.setToolTip("See and remove downloaded accuracy models and graphics card files")
         downloads.clicked.connect(self.show_downloads)
@@ -710,11 +758,18 @@ class MainWindow(QMainWindow):
             self.s.show_text = on
             self.s.save()
 
+    def on_measured(self, key, n_bytes):
+        if key in models.MODELS:
+            self.s.vram_measured[key] = int(n_bytes)
+            self.s.save()
+            self.fill_accuracy_box()
+
     def careful_changed(self, on):
         self.s.careful = bool(on)
         self.s.save()
         if self.recognizer is not None:
             self.recognizer.beam = 5 if on else 1
+        self.fill_accuracy_box()
 
     def live_changed(self, on):
         self.s.live = bool(on)        # listeners ask for this each time, so it applies straight away
@@ -752,7 +807,8 @@ class MainWindow(QMainWindow):
         for key in models.ORDER:
             repo, label, size, about = models.MODELS[key]
             extra = "" if repo is None or self.store.installed(key) else f"  ({size} download)"
-            self.accuracy.addItem(f"{icons[key]}  {label}{extra}", key)
+            mem = vram.model_vram_text(key, self.s.vram_measured, self.s.careful).replace(" (measured)", "")
+            self.accuracy.addItem(f"{icons[key]}  {label}{extra}  ·  {mem} VRAM", key)
             self.accuracy.setItemData(self.accuracy.count() - 1, about, Qt.ToolTipRole)
         self.accuracy.setCurrentIndex(list(models.ORDER).index(self.s.accuracy))
         self.accuracy.blockSignals(False)

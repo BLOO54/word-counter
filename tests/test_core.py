@@ -171,3 +171,11 @@ def test_segmenter_live_checks():
     assert len(finals) == 1 and len(lives) >= 2
     assert all(p[0] == finals[0][0] for p in lives)                 # all checks belong to the same sentence
     assert all(p[1] < finals[0][1] for p in lives)
+
+
+def test_vram_text():
+    from wordcounter import vram
+    assert vram.model_vram_text("best", {}) == "~1.8 GB"
+    assert vram.model_vram_text("best", {}, careful=True) == "~2.0 GB"
+    assert vram.model_vram_text("max", {"max": 3_120_000_000}) == "3.1 GB (measured)"
+    assert vram.card_memory() is None or len(vram.card_memory()) == 2

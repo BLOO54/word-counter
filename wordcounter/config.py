@@ -42,6 +42,7 @@ class Settings:
     use_gpu: bool = False
     milestone: int = 0
     careful: bool = False
+    vram_measured: dict = field(default_factory=dict)   # model -> bytes on the graphics card
     live: bool = False
     geometry: str = ""
 
@@ -63,6 +64,8 @@ class Settings:
                    for w in s.words if isinstance(w, dict) and str(w.get("text", "")).strip()]
         if s.source not in SOURCES:
             s.source = "mic"
+        s.vram_measured = {str(k): int(v) for k, v in (s.vram_measured or {}).items()
+                           if isinstance(v, (int, float)) and v > 0} if isinstance(s.vram_measured, dict) else {}
         if s.milestone not in (0, 10, 25, 50, 100):
             s.milestone = 0
         if s.accuracy not in ("fast", "better", "best", "max"):
