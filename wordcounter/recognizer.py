@@ -1,4 +1,4 @@
-"""Speech recognition that runs on your own PC (Whisper "base.en", no internet needed).
+"""Speech recognition that runs on your own PC (Whisper - no internet needed once a model is there).
 
 Plain English: pieces of speech go into a queue; one background worker turns
 each piece into text and reports it back.
@@ -26,12 +26,14 @@ def model_dir() -> Path:
     return resource_dir() / "models" / MODEL_NAME
 
 
-def load_model():
+def load_model(path=None):
+    import os
     from faster_whisper import WhisperModel
-    path = model_dir()
+    path = path or model_dir()
     if not (path / "model.bin").exists():
         raise RuntimeError(f"speech model missing at {path}")
-    return WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=4)
+    threads = max(2, min(8, (os.cpu_count() or 4) // 2))
+    return WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=threads)
 
 
 def transcribe(model, audio: np.ndarray, hotwords: str = "") -> str:
@@ -54,14 +56,18 @@ def transcribe(model, audio: np.ndarray, hotwords: str = "") -> str:
 
 
 class Recognizer(threading.Thread):
-    """Background worker: load the model once, then transcribe pieces as they arrive."""
+    """Background worker: load a model, then transcribe pieces as they arrive.
+    switch(path) loads a different model without stopping."""
 
     def __init__(self, on_text: Callable[[str, str], None], on_ready: Callable[[str | None], None],
-                 get_hotwords: Callable[[], str]):
+                 get_hotwords: Callable[[], str], model_path=None,
+                 on_switch_failed: Callable[[str], None] = lambda msg: None):
         super().__init__(daemon=True, name="recognizer")
         self.on_text = on_text
         self.on_ready = on_ready
         self.get_hotwords = get_hotwords
+        self.model_path = model_path
+        self.on_switch_failed = on_switch_failed
         self.q: queue.Queue = queue.Queue()
         self.model = None
 
@@ -69,25 +75,52 @@ class Recognizer(threading.Thread):
         # if the PC is falling behind, drop the oldest pieces so counts stay live
         while self.q.qsize() > 6:
             try:
-                self.q.get_nowait()
+                item = self.q.get_nowait()
             except queue.Empty:
+                break
+            if item[0] == "__switch__":       # never drop a model change
+                self.q.put(item)
                 break
         self.q.put((source, audio))
 
-    def run(self) -> None:
+    def switch(self, path) -> None:
+        self.q.put(("__switch__", path))
+
+    def _load(self, path) -> str | None:
+        """Load a model; returns None if it worked, otherwise the reason."""
         t = time.monotonic()
         try:
-            self.model = load_model()
+            self.model = load_model(path)
         except Exception as e:
             log.exception("speech model failed to load")
-            self.on_ready(f"speech engine failed to start ({e})")
-            return
-        log.info("speech model loaded in %.1f s", time.monotonic() - t)
-        self.on_ready(None)
+            return str(e) or type(e).__name__
+        log.info("speech model %s loaded in %.1f s", getattr(path, "name", "base.en"), time.monotonic() - t)
+        return None
+
+    def run(self) -> None:
+        err = self._load(self.model_path)
+        if err and self.model_path is not None:
+            err = self._load(None)           # fall back to the built-in model
+            self.on_ready(None if not err else f"speech engine failed to start ({err})")
+            if not err:
+                self.on_switch_failed("the chosen accuracy model wouldn't load, using Fast instead")
+        else:
+            self.on_ready(None if not err else f"speech engine failed to start ({err})")
         while True:
             source, audio = self.q.get()
+            if source == "__switch__":
+                old = self.model
+                err = self._load(audio)
+                if err:
+                    self.model = old
+                    self.on_switch_failed(err)
+                else:
+                    self.on_ready(None)
+                continue
             if audio is None:
                 return
+            if self.model is None:
+                continue
             try:
                 # no word hints: Whisper tends to skip hinted words at the start of a sentence
                 text = transcribe(self.model, audio)

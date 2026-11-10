@@ -38,6 +38,7 @@ class Settings:
     always_on_top: bool = False
     show_text: bool = True
     similar: bool = True
+    accuracy: str = "fast"
     geometry: str = ""
 
     @classmethod
@@ -58,6 +59,8 @@ class Settings:
                    for w in s.words if isinstance(w, dict) and str(w.get("text", "")).strip()]
         if s.source not in SOURCES:
             s.source = "mic"
+        if s.accuracy not in ("fast", "better", "best"):
+            s.accuracy = "fast"
         return s
 
     def save(self) -> None:

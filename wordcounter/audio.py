@@ -158,8 +158,8 @@ class Listener(threading.Thread):
     def run(self) -> None:
         warnings.filterwarnings("ignore", message=".*discontinuity.*")
         seg = Segmenter(lambda a: self.on_piece(self.kind, a), adaptive=(self.kind == "mic"))
-        if self.kind == "discord":                 # Discord doesn't use soundcard at all
-            self._run_discord(seg)
+        if self.kind in ("discord", "mic"):         # these talk to Windows directly (no soundcard)
+            (self._run_discord if self.kind == "discord" else self._run_mic)(seg)
             self.on_status(self.kind, "stopped")
             return
         try:
@@ -231,36 +231,26 @@ class Listener(threading.Thread):
         raise last if last else RuntimeError("no usable sound format")
 
 
-class _Opened:
-    """Wraps an already-opened recorder so `with` closes it without opening it again."""
-
-    def __init__(self, rec):
-        self.rec = rec
-
-    def __enter__(self):
-        return self.rec
-
-    def __exit__(self, *exc):
-        return self.rec.__exit__(*exc)
-
-
-def describe(e: Exception) -> str:
-    return str(e) or type(e).__name__
-
-
-def to_16k_mono(data: np.ndarray, rate: int) -> np.ndarray:
-    """Any channels / sample rate -> 16 kHz mono float32."""
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    data = data.reshape(-1).astype(np.float32)
-    if rate == RATE:
-        return data.copy()
-    if rate % RATE == 0:
-        k = rate // RATE
-        n = len(data) // k * k
-        return data[:n].reshape(-1, k).mean(axis=1).astype(np.float32)
-    idx = np.arange(0, len(data), rate / RATE)
-    return np.interp(idx, np.arange(len(data)), data).astype(np.float32)
+    def _run_mic(self, seg: "Segmenter") -> None:
+        from .app_audio import MicAudio, default_mic_id
+        while not self._halt.is_set():
+            try:
+                dev_id = default_mic_id()
+                with MicAudio() as src:
+                    self.on_status(self.kind, "listening")
+                    checks = 0
+                    while not self._halt.is_set():
+                        frame = src.read(FRAME)
+                        seg.add(frame)
+                        self.on_level(self.kind, float(np.abs(frame).max()) if frame.size else 0.0)
+                        checks += 1
+                        if checks % 50 == 0 and default_mic_id() != dev_id:
+                            log.info("default microphone changed - switching")
+                            break
+            except Exception as e:
+                log.warning("microphone failed: %r", e, exc_info=True)
+                self.on_status(self.kind, f"the microphone won't start - retrying… ({describe(e)})")
+                self._halt.wait(3)
 
     def _run_discord(self, seg: "Segmenter") -> None:
         from .app_audio import AppAudio
@@ -296,3 +286,35 @@ def to_16k_mono(data: np.ndarray, rate: int) -> np.ndarray:
                 log.warning("Discord listener: %s", e)
                 self.on_status(self.kind, f"lost Discord's sound - retrying… ({e})")
                 self._halt.wait(3)
+
+
+class _Opened:
+    """Wraps an already-opened recorder so `with` closes it without opening it again."""
+
+    def __init__(self, rec):
+        self.rec = rec
+
+    def __enter__(self):
+        return self.rec
+
+    def __exit__(self, *exc):
+        return self.rec.__exit__(*exc)
+
+
+def describe(e: Exception) -> str:
+    return str(e) or type(e).__name__
+
+
+def to_16k_mono(data: np.ndarray, rate: int) -> np.ndarray:
+    """Any channels / sample rate -> 16 kHz mono float32."""
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    data = data.reshape(-1).astype(np.float32)
+    if rate == RATE:
+        return data.copy()
+    if rate % RATE == 0:
+        k = rate // RATE
+        n = len(data) // k * k
+        return data[:n].reshape(-1, k).mean(axis=1).astype(np.float32)
+    idx = np.arange(0, len(data), rate / RATE)
+    return np.interp(idx, np.arange(len(data)), data).astype(np.float32)

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, APP_VERSION, matching, updater
+from . import APP_NAME, APP_VERSION, matching, models, updater
 from .audio import Listener
 from .config import SOURCE_PARTS, Settings, resource_dir
 from .recognizer import Recognizer
@@ -71,6 +71,9 @@ class Bridge(QObject):
     update_result = Signal(object, bool)
     update_progress = Signal(float)
     update_downloaded = Signal(object)
+    model_progress = Signal(float)
+    model_done = Signal(str, object)
+    switch_failed = Signal(str)
 
 
 class WordCard(QFrame):
@@ -134,6 +137,9 @@ class MainWindow(QMainWindow):
         self._lock = threading.Lock()
         self.update_info = None
         self._update_busy = False
+        self.store = models.ModelStore()
+        self.model_note = ""
+        self.downloading = None
 
         self.setWindowTitle(APP_NAME)
         icon = resource_dir() / "assets" / "icon.png"
@@ -158,8 +164,17 @@ class MainWindow(QMainWindow):
         self.bridge.update_progress.connect(self.on_update_progress)
         self.bridge.update_downloaded.connect(self.on_update_downloaded)
         self.recognizer = None
+        self.bridge.model_progress.connect(self.on_model_progress)
+        self.bridge.model_done.connect(self.on_model_done)
+        self.bridge.switch_failed.connect(self.on_switch_failed)
         if start_engine:
-            self.recognizer = Recognizer(self.bridge.heard.emit, self.bridge.ready.emit, self.hotwords)
+            acc = self.s.accuracy
+            path = self.store.path(acc) if acc != "fast" and self.store.installed(acc) else None
+            if path is None:
+                self.s.accuracy = "fast"
+                self.set_accuracy_box("fast")
+            self.recognizer = Recognizer(self.bridge.heard.emit, self.bridge.ready.emit, self.hotwords,
+                                         model_path=path, on_switch_failed=self.bridge.switch_failed.emit)
             self.recognizer.start()
             # quietly look for a new version a few seconds after start, then every few hours
             QTimer.singleShot(4000, lambda: self.check_updates(quiet=True))
@@ -213,6 +228,14 @@ class MainWindow(QMainWindow):
         self.source.currentIndexChanged.connect(self.source_changed)
         src.addWidget(lbl)
         src.addWidget(self.source, 1)
+        acc_lbl = QLabel("Accuracy:")
+        acc_lbl.setObjectName("muted")
+        self.accuracy = QComboBox()
+        self.fill_accuracy_box()
+        self.accuracy.currentIndexChanged.connect(self.accuracy_changed)
+        src.addSpacing(10)
+        src.addWidget(acc_lbl)
+        src.addWidget(self.accuracy)
         lay.addLayout(src)
 
         self.listen_btn = QPushButton("▶  Start Listening")
@@ -446,6 +469,8 @@ class MainWindow(QMainWindow):
         self.render_transcript()
 
     def on_ready(self, error):
+        if error is None:
+            self.model_note = ""
         self.engine_ready = error is None
         self.engine_error = error
         self.update_status()
@@ -464,7 +489,9 @@ class MainWindow(QMainWindow):
             self.status.setText(f"⚠ {self.engine_error}")
             return
         parts = []
-        if not self.engine_ready:
+        if self.model_note:
+            parts.append(self.model_note)
+        elif not self.engine_ready:
             parts.append("Loading speech engine…")
         if self.listening:
             for kind in self.wanted_sources():
@@ -501,6 +528,96 @@ class MainWindow(QMainWindow):
             self.s.always_on_top = bool(on)
             self.s.save()
             self.show()
+
+    # ------------------------------------------------------------------ accuracy (speech model)
+    def fill_accuracy_box(self):
+        self.accuracy.blockSignals(True)
+        self.accuracy.clear()
+        icons = {"fast": "⚡", "better": "🎯", "best": "🏆"}
+        for key in models.ORDER:
+            repo, label, size, about = models.MODELS[key]
+            extra = "" if repo is None or self.store.installed(key) else f"  ({size} download)"
+            self.accuracy.addItem(f"{icons[key]}  {label}{extra}", key)
+            self.accuracy.setItemData(self.accuracy.count() - 1, about, Qt.ToolTipRole)
+        self.accuracy.setCurrentIndex(list(models.ORDER).index(self.s.accuracy))
+        self.accuracy.blockSignals(False)
+
+    def set_accuracy_box(self, key):
+        self.accuracy.blockSignals(True)
+        self.accuracy.setCurrentIndex(list(models.ORDER).index(key))
+        self.accuracy.blockSignals(False)
+
+    def accuracy_changed(self, _i):
+        from PySide6.QtWidgets import QMessageBox
+        key = self.accuracy.currentData()
+        if key == self.s.accuracy:
+            return
+        if self.downloading:
+            self.set_accuracy_box(self.s.accuracy)
+            return
+        if key == "fast" or self.store.installed(key):
+            self.use_model(key)
+            return
+        repo, label, size, about = models.MODELS[key]
+        box = QMessageBox(QMessageBox.Question, f"Download {label}?",
+                          f"{label} accuracy needs a one-time download ({size}).\n\n"
+                          f"It {about}. It runs on your PC like the built-in one.\n\nDownload it now?",
+                          QMessageBox.Yes | QMessageBox.No, self)
+        box.button(QMessageBox.Yes).setText("Download")
+        box.button(QMessageBox.No).setText("Cancel")
+        if box.exec() != QMessageBox.Yes:
+            self.set_accuracy_box(self.s.accuracy)
+            return
+        self.downloading = key
+        self.accuracy.setEnabled(False)
+        self.update_status()
+
+        def work():
+            try:
+                self.store.download(key, progress=lambda d, t: self.bridge.model_progress.emit(d / t if t else 0))
+                self.bridge.model_done.emit(key, None)
+            except Exception as e:
+                log.exception("model download failed")
+                self.bridge.model_done.emit(key, e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_model_progress(self, frac):
+        if self.downloading:
+            label = models.MODELS[self.downloading][1]
+            self.model_note = f"Downloading {label} accuracy… {int(frac * 100)}%"
+            self.update_status()
+
+    def on_model_done(self, key, error):
+        self.downloading = None
+        self.model_note = ""
+        self.accuracy.setEnabled(True)
+        if error is not None:
+            self.set_accuracy_box(self.s.accuracy)
+            self.update_status()
+            self.popup("Download failed", f"{error}\n\nCheck your internet and try again.")
+            return
+        self.fill_accuracy_box()
+        self.use_model(key)
+
+    def use_model(self, key):
+        self._prev_accuracy = self.s.accuracy
+        self.s.accuracy = key
+        self.s.save()
+        self.set_accuracy_box(key)
+        if self.recognizer is not None:
+            self.engine_ready = False
+            self.model_note = f"Switching to {models.MODELS[key][1]} accuracy…"
+            self.update_status()
+            self.recognizer.switch(self.store.path(key) if key != "fast" else None)
+
+    def on_switch_failed(self, msg):
+        self.engine_ready = True
+        self.model_note = ""
+        self.s.accuracy = getattr(self, "_prev_accuracy", "fast")
+        self.s.save()
+        self.set_accuracy_box(self.s.accuracy)
+        self.update_status()
+        self.popup("Couldn't change accuracy", msg)
 
     # ------------------------------------------------------------------ updates
     def check_updates(self, quiet: bool):

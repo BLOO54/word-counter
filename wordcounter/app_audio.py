@@ -173,12 +173,35 @@ class AppAudio:
         self._com = False
 
     # -- set-up -------------------------------------------------------------
+    loopback = True          # recording another app's output (Discord); False for a microphone
+
     def __enter__(self):
         if not IS_WINDOWS:
             raise RuntimeError("only on Windows")
         ole32 = ctypes.WinDLL("ole32")
         hr = ole32.CoInitializeEx(None, 0x0)                 # multithreaded
         self._com = hr in (0, 1)
+        self.client = self._activate()
+        self._init_format()
+        cap = c_void_p()
+        hr = _method(self.client, 14, POINTER(GUID), POINTER(c_void_p))(self.client, byref(IID_IAudioCaptureClient),
+                                                                         byref(cap))
+        if hr < 0:
+            raise OSError(f"no capture client ({_hr(hr)})")
+        self.capture = cap
+        hr = _method(self.client, 10)(self.client)            # Start
+        if hr < 0:
+            raise OSError(f"couldn't start ({_hr(hr)})")
+        self._last_data = time.monotonic()
+        log.info("%s: recording (%d Hz, %d ch, %d-bit%s)", self.describe(), self.rate,
+                 self.channels, self.bits, " float" if self.is_float else "")
+        return self
+
+    def describe(self) -> str:
+        return f"app audio (process {self.pid})"
+
+    def _activate(self):
+        """Get an IAudioClient for just this app's sound."""
         mmdev = ctypes.WinDLL("Mmdevapi")
         act = mmdev.ActivateAudioInterfaceAsync
         act.restype = c_long
@@ -201,40 +224,42 @@ class AppAudio:
                 raise OSError(f"app audio not available ({_hr(hr if hr < 0 else res.value)})")
         finally:
             _release(op)
-        # the result is the IAudioClient itself (activated with that IID)
-        self.client = unk
-        self._init_format()
-        cap = c_void_p()
-        hr = _method(self.client, 14, POINTER(GUID), POINTER(c_void_p))(self.client, byref(IID_IAudioCaptureClient),
-                                                                         byref(cap))
-        if hr < 0:
-            raise OSError(f"no capture client ({_hr(hr)})")
-        self.capture = cap
-        hr = _method(self.client, 10)(self.client)            # Start
-        if hr < 0:
-            raise OSError(f"couldn't start ({_hr(hr)})")
-        self._last_data = time.monotonic()
-        log.info("app audio: listening to process %d (%d Hz, %d ch, %d-bit%s)", self.pid, self.rate,
-                 self.channels, self.bits, " float" if self.is_float else "")
-        return self
+        return unk          # the IAudioClient itself (activated with that IID)
 
     def _init_format(self):
         init = _method(self.client, 3, c_ulong, c_ulong, ctypes.c_longlong, ctypes.c_longlong,
-                       POINTER(WAVEFORMATEX), c_void_p)
+                       c_void_p, c_void_p)
         LOOPBACK, AUTOCONVERT, SRC_QUALITY = 0x00020000, 0x80000000, 0x08000000
-        tries = [(16000, 1, LOOPBACK | AUTOCONVERT | SRC_QUALITY),
-                 (48000, 2, LOOPBACK | AUTOCONVERT | SRC_QUALITY),
-                 (44100, 2, LOOPBACK), (48000, 2, LOOPBACK)]
+        lb = LOOPBACK if self.loopback else 0
+        tries = [(16000, 1, lb | AUTOCONVERT | SRC_QUALITY),
+                 (48000, 2, lb | AUTOCONVERT | SRC_QUALITY),
+                 (48000, 1, lb | AUTOCONVERT | SRC_QUALITY),
+                 (44100, 2, lb), (48000, 2, lb), (48000, 1, lb), (44100, 1, lb)]
         last = 0
         for rate, ch, flags in tries:
             fmt = WAVEFORMATEX(1, ch, rate, rate * ch * 2, ch * 2, 16, 0)     # 16-bit PCM
-            hr = init(self.client, 0, flags, 2_000_000, 0, byref(fmt), None)  # shared, 200 ms buffer
+            hr = init(self.client, 0, flags, 2_000_000, 0, cast(byref(fmt), c_void_p), None)  # shared, 200 ms
             if hr >= 0:
-                self.rate, self.channels, self.bits = rate, ch, 16
+                self.rate, self.channels, self.bits, self.is_float = rate, ch, 16, False
                 return
             last = hr
+            log.info("%s: %d Hz / %d ch refused (%s)", self.describe(), rate, ch, _hr(hr))
             if (hr & 0xFFFFFFFF) == 0x88890002:      # AUDCLNT_E_ALREADY_INITIALIZED - shouldn't happen
                 break
+        # last resort: exactly the format Windows itself uses for this device
+        mix = c_void_p()
+        hr = _method(self.client, 8, POINTER(c_void_p))(self.client, byref(mix))     # GetMixFormat
+        if hr >= 0 and mix:
+            try:
+                wf = cast(mix, POINTER(WAVEFORMATEX)).contents
+                hr = init(self.client, 0, lb, 2_000_000, 0, mix, None)
+                if hr >= 0:
+                    self.rate, self.channels, self.bits = wf.nSamplesPerSec, wf.nChannels, wf.wBitsPerSample
+                    self.is_float = wf.wBitsPerSample == 32    # Windows' mix format is 32-bit float
+                    return
+                last = hr
+            finally:
+                ctypes.WinDLL("ole32").CoTaskMemFree(mix)
         raise OSError(f"no usable sound format ({_hr(last)})")
 
     def __exit__(self, *exc):
@@ -275,8 +300,13 @@ class AppAudio:
             if flags.value & 0x2 or not data:                 # AUDCLNT_BUFFERFLAGS_SILENT
                 arr = np.zeros(count, dtype=np.float32)
             else:
-                raw = ctypes.string_at(data, count * 2)
-                arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                if self.bits == 32:
+                    raw = ctypes.string_at(data, count * 4)
+                    arr = (np.frombuffer(raw, dtype=np.float32) if self.is_float else
+                           np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0).copy()
+                else:
+                    raw = ctypes.string_at(data, count * 2)
+                    arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
             rel_buf(self.capture, frames.value)
             self._pending.append(self._to_16k_mono(arr))
             got = True
@@ -311,6 +341,73 @@ class AppAudio:
         out, rest = allp[:frames], allp[frames:]
         self._pending = [rest] if len(rest) else []
         return out.astype(np.float32)
+
+
+if IS_WINDOWS:
+    CLSID_MMDeviceEnumerator = GUID.of("BCDE0395-E52F-467C-8E3D-C4579291692E")
+    IID_IMMDeviceEnumerator = GUID.of("A95664D2-9614-4F35-A746-DE8DB63617E6")
+
+
+def _default_capture_device():
+    """IMMDevice of Windows' default microphone (caller releases it)."""
+    enum = c_void_p()
+    hr = ctypes.WinDLL("ole32").CoCreateInstance(byref(CLSID_MMDeviceEnumerator), None, 23,
+                                                 byref(IID_IMMDeviceEnumerator), byref(enum))
+    if hr < 0:
+        raise OSError(f"Windows sound system unavailable ({_hr(hr)})")
+    try:
+        dev = c_void_p()
+        hr = _method(enum, 4, c_ulong, c_ulong, POINTER(c_void_p))(enum, 1, 0, byref(dev))  # eCapture, eConsole
+        if hr < 0 or not dev:
+            if (hr & 0xFFFFFFFF) == 0x80070490:
+                raise OSError("no microphone found - check it's plugged in and set as default in Windows")
+            raise OSError(f"no default microphone ({_hr(hr)})")
+        return dev
+    finally:
+        _release(enum)
+
+
+def default_mic_id() -> str:
+    """An id that changes when the default microphone in Windows changes ('' if none)."""
+    try:
+        dev = _default_capture_device()
+    except OSError:
+        return ""
+    try:
+        sid = c_wchar_p()
+        if _method(dev, 5, POINTER(c_wchar_p))(dev, byref(sid)) < 0:
+            return ""
+        val = sid.value or ""
+        ctypes.WinDLL("ole32").CoTaskMemFree(sid)
+        return val
+    finally:
+        _release(dev)
+
+
+class MicAudio(AppAudio):
+    """Records Windows' default microphone directly (no extra libraries)."""
+
+    loopback = False
+
+    def __init__(self):
+        super().__init__(0)
+
+    def describe(self) -> str:
+        return "microphone"
+
+    def _activate(self):
+        dev = _default_capture_device()
+        try:
+            client = c_void_p()
+            hr = _method(dev, 3, POINTER(GUID), c_ulong, c_void_p, POINTER(c_void_p))(
+                dev, byref(IID_IAudioClient), 23, None, byref(client))
+            if hr < 0 or not client:
+                if (hr & 0xFFFFFFFF) == 0x8889000A:          # AUDCLNT_E_DEVICE_IN_USE
+                    raise OSError("another app is using the microphone in exclusive mode")
+                raise OSError(f"couldn't open the microphone ({_hr(hr)})")
+            return client
+        finally:
+            _release(dev)
 
 
 def probe(pid: int, seconds: float = 1.5) -> dict:

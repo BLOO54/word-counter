@@ -118,3 +118,9 @@ def test_highlight_similar():
     text = "Hey Conner, Connor's here, corner bros"
     spans = matching.highlight_spans(text, ["connor", "bro"])
     assert [text[a:b] for a, b in spans] == ["Conner", "Connor's", "bros"]
+
+
+def test_listener_has_every_source():
+    from wordcounter.audio import Listener
+    for name in ("run", "_run_mic", "_run_discord", "_open"):
+        assert callable(getattr(Listener, name, None)), name

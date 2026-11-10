@@ -72,9 +72,10 @@ jobs:
           Get-Content ci-listen.json
           # build machines have no microphone, so "no microphone found" is expected here -
           # but the sound system itself must start
-          if (Select-String -Path ci-listen.json -SimpleMatch "can't use sound devices") {
+          $r = Get-Content ci-listen.json -Raw | ConvertFrom-Json
+          if (-not $r.ok) {
             Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40
-            throw "the sound system failed to start when pressing Start"
+            throw "pressing Start failed for a sound source (crash, no answer, or sound system error)"
           }
 
       - name: Hearing test (a computer voice says the words, the app counts them)
@@ -95,6 +96,16 @@ jobs:
           $r = Get-Content ci-hear.json -Raw | ConvertFrom-Json
           "bro: $($r.counts.bro)/3   pizza: $($r.counts.pizza)/2   no way: $($r.counts.'no way')/1"
           if ($r.counts.bro -lt 3 -or $r.counts.pizza -lt 2 -or $r.counts.'no way' -lt 1) { throw "the app didn't count the words well enough" }
+
+      - name: Hearing test with the downloadable "Better" model
+        run: |
+          $exe = "dist\WordCounter\WordCounter.exe"
+          $p = Start-Process $exe -ArgumentList "--hear-test","$PWD\ci-hear.wav","$PWD\ci-hear-better.json","--words","`"bro,pizza,no way`"","--model","better" -PassThru
+          if (-not $p.WaitForExit(600000)) { Stop-Process $p -Force; throw "Better model test took too long" }
+          if (-not (Test-Path ci-hear-better.json)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "no report for the Better model" }
+          Get-Content ci-hear-better.json
+          $r = Get-Content ci-hear-better.json -Raw | ConvertFrom-Json
+          if ($r.counts.bro -lt 3 -or $r.counts.pizza -lt 2) { throw "Better model didn't count the words" }
 
       - name: Picture of the window
         run: |
@@ -188,6 +199,7 @@ jobs:
             window.png
             ci-hear.json
             ci-listen.json
+            ci-hear-better.json
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.
             If Windows says "Windows protected your PC", click **More info → Run anyway** (the app isn't paid-signed).

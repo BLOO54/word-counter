@@ -85,7 +85,7 @@ def self_test(report: str | None) -> int:
     return 0 if ok else 1
 
 
-def hear_test(wav: str, report: str, words: list[str]) -> int:
+def hear_test(wav: str, report: str, words: list[str], model_name: str = "fast") -> int:
     """Feed a .wav file through the same path as live listening and count the words."""
     import wave
     import numpy as np
@@ -102,8 +102,15 @@ def hear_test(wav: str, report: str, words: list[str]) -> int:
     seg = Segmenter(pieces.append, adaptive=True)
     for i in range(0, len(audio) - FRAME + 1, FRAME):
         seg.add(audio[i:i + FRAME])
+    from wordcounter.models import ModelStore
+    store = ModelStore()
     t = time.monotonic()
-    model = load_model()
+    download_s = 0.0
+    if model_name != "fast" and not store.installed(model_name):
+        store.download(model_name)
+        download_s = time.monotonic() - t
+    t = time.monotonic()
+    model = load_model(store.path(model_name) if model_name != "fast" else None)
     load_s = time.monotonic() - t
     texts, counts = [], {w: 0 for w in words}
     t = time.monotonic()
@@ -112,7 +119,8 @@ def hear_test(wav: str, report: str, words: list[str]) -> int:
         texts.append(text)
         for w in words:
             counts[w] += matching.count(text, w)
-    rep = {"pieces": len(pieces), "texts": texts, "counts": counts,
+    rep = {"model": model_name, "download_s": round(download_s, 1), "pieces": len(pieces),
+           "texts": texts, "counts": counts,
            "load_s": round(load_s, 2), "hear_s": round(time.monotonic() - t, 2),
            "audio_s": round(len(audio) / RATE, 1)}
     with open(report, "w", encoding="utf-8") as f:
@@ -128,6 +136,7 @@ def main() -> int:
     ap.add_argument("--quit-after", type=float)
     ap.add_argument("--hear-test", nargs=2, metavar=("WAV", "REPORT"))
     ap.add_argument("--words", default="")
+    ap.add_argument("--model", default="fast")
     ap.add_argument("--app-audio-probe", nargs=2, metavar=("PID", "OUT"))
     ap.add_argument("--listen-test", metavar="REPORT")
     args, _ = ap.parse_known_args()
@@ -138,18 +147,24 @@ def main() -> int:
     if args.listen_test:                      # press "Start" without a window, report what each source says
         import threading
         from wordcounter.audio import Listener
-        from wordcounter.config import SOURCE_PARTS
         statuses: dict = {}
         lock = threading.Lock()
 
         def status(kind, text):
             with lock:
                 statuses.setdefault(kind, []).append(text)
-        for kind in SOURCE_PARTS["both"] + ["discord"]:
+        crashes = []
+        threading.excepthook = lambda a: crashes.append(f"{a.thread.name}: {a.exc_type.__name__}: {a.exc_value}")
+        kinds = ["pc", "mic", "discord"]
+        for kind in kinds:
             Listener(kind, lambda k, a: None, status, lambda k, v: None).start()
         time.sleep(6)
+        missing = [k for k in kinds if not statuses.get(k)]
+        ok = not crashes and not missing and not any(
+            "can't use sound devices" in t for ts in statuses.values() for t in ts)
         with open(args.listen_test, "w", encoding="utf-8") as fh:
-            json.dump(statuses, fh, indent=2, ensure_ascii=False)
+            json.dump({"ok": ok, "crashes": crashes, "silent": missing, "statuses": statuses},
+                      fh, indent=2, ensure_ascii=False)
         return 0
     if args.app_audio_probe:                  # run by the Discord listener in a separate process
         from wordcounter.app_audio import probe
@@ -162,7 +177,7 @@ def main() -> int:
         return self_test(args.report)
     if args.hear_test:
         return hear_test(args.hear_test[0], args.hear_test[1],
-                         [w.strip() for w in args.words.split(",") if w.strip()])
+                         [w.strip() for w in args.words.split(",") if w.strip()], args.model)
 
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
