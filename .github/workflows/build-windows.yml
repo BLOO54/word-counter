@@ -137,6 +137,7 @@ jobs:
           $p = Start-Process $exe -ArgumentList "--screenshot","$PWD\window.png","--quit-after","3" -Wait -PassThru
           if (-not (Test-Path window.png)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "window did not open" }
           if (-not (Test-Path window-milestone.png)) { throw "milestone pop-up did not show" }
+          if (-not (Test-Path window-overlay.png)) { throw "overlay did not show" }
           if (-not (Test-Path window-downloads.png)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "Downloads window did not open" }
 
       - name: Can the app hear sound devices (info only - build machines have none)
@@ -225,6 +226,7 @@ jobs:
             window.png
             window-milestone.png
             window-downloads.png
+            window-overlay.png
             ci-hear.json
             ci-listen.json
             ci-hear-better.json

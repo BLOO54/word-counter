@@ -42,6 +42,9 @@ class Settings:
     use_gpu: bool = False
     milestone: int = 0
     careful: bool = False
+    overlay: bool = False
+    overlay_corner: str = "top-right"
+    overlay_size: str = "small"
     vram_measured: dict = field(default_factory=dict)   # model -> bytes on the graphics card
     live: bool = False
     geometry: str = ""

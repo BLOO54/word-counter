@@ -238,7 +238,7 @@ def main() -> int:
 
     if args.screenshot:                       # example window for the build check
         s = Settings(words=[{"text": "bro", "count": 12}, {"text": "no way", "count": 3},
-                            {"text": "skibidi", "count": 7}], beep=True, milestone=25)
+                            {"text": "skibidi", "count": 7}], beep=True, milestone=25, overlay=True)
         s.save = lambda: None                 # don't touch the real settings
         win = MainWindow(s, start_engine=False)
         win.on_ready(None)
@@ -261,6 +261,7 @@ def main() -> int:
             def finish():
                 t.grab().save(args.screenshot.replace(".png", "-milestone.png"))
                 d.grab().save(args.screenshot.replace(".png", "-downloads.png"))
+                win.overlay.grab().save(args.screenshot.replace(".png", "-overlay.png"))
                 app.quit()
             QTimer.singleShot(400, finish)
         QTimer.singleShot(int((args.quit_after or 2) * 1000), shot)

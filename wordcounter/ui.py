@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME, APP_VERSION, gpu, matching, models, stats, updater, vram
 from .audio import Listener
+from .overlay import CORNERS, SIZES, Overlay
 from .config import SOURCE_PARTS, Settings, resource_dir
 from .recognizer import Recognizer
 
@@ -293,6 +294,8 @@ class MainWindow(QMainWindow):
         self.update_info = None
         self._update_busy = False
         self.store = models.ModelStore()
+        self.overlay = Overlay()
+        self.overlay.configure(self.s.overlay_corner, self.s.overlay_size)
         self.model_note = ""
         self.recognizer = None
         self.downloading = None
@@ -349,6 +352,9 @@ class MainWindow(QMainWindow):
             self.update_timer.timeout.connect(lambda: self.check_updates(quiet=True))
             self.update_timer.start(updater.CHECK_EVERY_HOURS * 3600 * 1000)
         self.update_status()
+        if self.s.overlay:
+            self.update_overlay()
+            self.overlay.show()
 
     # ------------------------------------------------------------------ layout
     def _build(self):
@@ -487,6 +493,27 @@ class MainWindow(QMainWindow):
         ms_row.addSpacing(16)
         ms_row.addWidget(downloads)
         options.addLayout(ms_row, 4, 0, 1, 2)
+        ov_row = QHBoxLayout()
+        self.overlay_box = QCheckBox("In-game overlay")
+        self.overlay_box.setToolTip("A tiny counter in a corner of your screen that stays on top of games\n"
+                                    "(borderless / windowed fullscreen). Clicks go straight through it.")
+        self.overlay_box.setChecked(self.s.overlay)
+        self.overlay_box.toggled.connect(self.overlay_changed)
+        self.corner_box = QComboBox()
+        for key, label in CORNERS:
+            self.corner_box.addItem(label, key)
+        self.corner_box.setCurrentIndex([k for k, _ in CORNERS].index(self.overlay.corner))
+        self.corner_box.currentIndexChanged.connect(self.overlay_look_changed)
+        self.size_box = QComboBox()
+        for key, label, _px in SIZES:
+            self.size_box.addItem(label, key)
+        self.size_box.setCurrentIndex([k for k, _, _ in SIZES].index(self.overlay.size_key))
+        self.size_box.currentIndexChanged.connect(self.overlay_look_changed)
+        ov_row.addWidget(self.overlay_box)
+        ov_row.addWidget(self.corner_box)
+        ov_row.addWidget(self.size_box)
+        ov_row.addStretch(1)
+        options.addLayout(ov_row, 5, 0, 1, 2)
         bottom.addLayout(options)
         bottom.addStretch(1)
         bottom.addWidget(reset)
@@ -524,6 +551,7 @@ class MainWindow(QMainWindow):
             empty.setObjectName("muted")
             empty.setAlignment(Qt.AlignCenter)
             self.grid.addWidget(empty, 0, 0)
+            self.update_overlay()
             return
         cols = 3
         for i, w in enumerate(self.s.words):
@@ -531,6 +559,7 @@ class MainWindow(QMainWindow):
             self.cards.append(card)
             self.grid.addWidget(card, i // cols, i % cols)
         self.grid.setRowStretch(len(self.s.words) // cols + 1, 1)
+        self.update_overlay()
 
     def add_word(self):
         text = self.input.text().strip()
@@ -557,6 +586,7 @@ class MainWindow(QMainWindow):
         w = self.s.words[i]
         w["count"] = 0 if delta is None else max(0, w["count"] + delta)
         self.cards[i].count.setText(str(w["count"]))
+        self.update_overlay()
         self.s.save()
 
     def reset_all(self):
@@ -599,6 +629,7 @@ class MainWindow(QMainWindow):
                 if reached:
                     milestones.append((w["text"], reached))
         if changed:
+            self.update_overlay({w for w, d in deltas.items() if d > 0})
             log.info("counted from %s%s: %s", source, "" if final else " (live)",
                      ", ".join(f"{w['text']}={w['count']}" for w in self.s.words))
             self.s.save()
@@ -682,6 +713,7 @@ class MainWindow(QMainWindow):
                            live=lambda: self.s.live)
             self.listeners[kind] = lst
             lst.start()
+        self.update_overlay()
         self.listen_btn.setText("■  Stop Listening")
         self.listen_btn.setProperty("on", True)
         self._restyle(self.listen_btn)
@@ -694,6 +726,7 @@ class MainWindow(QMainWindow):
         self.listeners = {}
         self.source_status = {}
         self.meter.setValue(0)
+        self.update_overlay()
         self.listen_btn.setText("▶  Start Listening")
         self.listen_btn.setProperty("on", False)
         self._restyle(self.listen_btn)
@@ -778,6 +811,25 @@ class MainWindow(QMainWindow):
     def show_downloads(self):
         DownloadsDialog(self).exec()
         self.fill_accuracy_box()
+
+    def overlay_changed(self, on):
+        self.s.overlay = bool(on)
+        self.s.save()
+        if on:
+            self.update_overlay()
+            self.overlay.show()
+        else:
+            self.overlay.hide()
+
+    def overlay_look_changed(self, _i):
+        self.s.overlay_corner = self.corner_box.currentData()
+        self.s.overlay_size = self.size_box.currentData()
+        self.s.save()
+        self.overlay.configure(self.s.overlay_corner, self.s.overlay_size)
+
+    def update_overlay(self, flash=None):
+        if self.s.overlay:
+            self.overlay.set_state(self.s.words, self.listening, flash)
 
     def milestone_changed(self, _i):
         self.s.milestone = int(self.milestone_box.currentData())
@@ -1097,6 +1149,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         self.stop_listening()
+        self.overlay.close()
         if self.recognizer is not None:
             self.recognizer.stop()
         self.s.geometry = bytes(self.saveGeometry()).hex()
