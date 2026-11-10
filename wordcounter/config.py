@@ -37,6 +37,7 @@ class Settings:
     beep: bool = True
     always_on_top: bool = False
     show_text: bool = True
+    similar: bool = True
     geometry: str = ""
 
     @classmethod

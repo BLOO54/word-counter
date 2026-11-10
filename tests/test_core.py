@@ -101,3 +101,20 @@ def test_to_16k_mono():
     out = to_16k_mono(np.zeros((4410, 2), np.float32), 44100)
     assert abs(len(out) - 1600) <= 1
     assert to_16k_mono(np.zeros((1600, 1), np.float32), 16000).shape == (1600,)
+
+
+def test_similar_spellings():
+    c = matching.count
+    assert c("Conner said hi to Conor and Connor", "connor") == 3
+    assert c("Connor's mic is broken", "connor") == 1
+    assert c("go to the corner, it's a cannon", "connor") == 0
+    assert c("bros being bros", "bro") == 2
+    assert c("brother", "bro") == 0
+    assert c("Conner", "connor", similar=False) == 0
+    assert c("no wey bro", "no way") == 0          # short words must match exactly
+
+
+def test_highlight_similar():
+    text = "Hey Conner, Connor's here, corner bros"
+    spans = matching.highlight_spans(text, ["connor", "bro"])
+    assert [text[a:b] for a, b in spans] == ["Conner", "Connor's", "bros"]

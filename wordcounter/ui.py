@@ -249,14 +249,21 @@ class MainWindow(QMainWindow):
         self.text_box = QCheckBox("Show what I'm hearing")
         self.text_box.setChecked(self.s.show_text)
         self.text_box.toggled.connect(self.show_text_changed)
+        self.similar_box = QCheckBox("Count similar spellings (Connor / Conner)")
+        self.similar_box.setChecked(self.s.similar)
+        self.similar_box.toggled.connect(self.similar_changed)
         reset = QPushButton("Reset all counts")
         reset.clicked.connect(self.reset_all)
         clear = QPushButton("Clear text")
         clear.clicked.connect(self.clear_text)
         self.clear_btn = clear
-        bottom.addWidget(self.beep_box)
-        bottom.addWidget(self.top_box)
-        bottom.addWidget(self.text_box)
+        options = QGridLayout()
+        options.setHorizontalSpacing(18)
+        options.addWidget(self.beep_box, 0, 0)
+        options.addWidget(self.top_box, 0, 1)
+        options.addWidget(self.text_box, 1, 0)
+        options.addWidget(self.similar_box, 1, 1)
+        bottom.addLayout(options)
         bottom.addStretch(1)
         bottom.addWidget(reset)
         bottom.addWidget(clear)
@@ -341,7 +348,7 @@ class MainWindow(QMainWindow):
             self.transcript = self.transcript[-60:]
         hit = False
         for i, w in enumerate(self.s.words):
-            n = matching.count(text, w["text"])
+            n = matching.count(text, w["text"], self.s.similar)
             if n:
                 w["count"] += n
                 hit = True
@@ -363,7 +370,7 @@ class MainWindow(QMainWindow):
         out = []
         for source, text in self.transcript:
             pieces, last = [], 0
-            for a, b in matching.highlight_spans(text, phrases):
+            for a, b in matching.highlight_spans(text, phrases, self.s.similar):
                 pieces.append(html.escape(text[last:a]))
                 pieces.append(f'<span style="color:{PINK}; font-weight:700;">{html.escape(text[a:b])}</span>')
                 last = b
@@ -478,6 +485,11 @@ class MainWindow(QMainWindow):
         if save:
             self.s.show_text = on
             self.s.save()
+
+    def similar_changed(self, on):
+        self.s.similar = bool(on)
+        self.s.save()
+        self.render_transcript()
 
     def beep_changed(self, on):
         self.s.beep = on
