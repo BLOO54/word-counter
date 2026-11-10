@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
         ms_row.addStretch(1)
         options.addWidget(self.careful_box, 3, 0)
         options.addWidget(self.live_box, 3, 1)
-        downloads = QPushButton("Models & downloads…")
+        downloads = QPushButton("Models && downloads…")
         downloads.setObjectName("small")
         downloads.setToolTip("See and remove downloaded accuracy models and graphics card files")
         downloads.clicked.connect(self.show_downloads)
