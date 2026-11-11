@@ -11,9 +11,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SOURCES = ("mic", "discord_mic", "discord", "pc", "both", "spotify")
+SOURCES = ("mic", "discord_mic", "discord", "pc", "both", "spotify", "bot")
 SOURCE_PARTS = {"mic": ["mic"], "discord_mic": ["discord", "mic"], "discord": ["discord"],
-                "pc": ["pc"], "both": ["pc", "mic"], "spotify": ["spotify"]}
+                "pc": ["pc"], "both": ["pc", "mic"], "spotify": ["spotify"], "bot": ["bot"]}
 
 
 def app_data_dir() -> Path:
@@ -42,6 +42,7 @@ class Settings:
     use_gpu: bool = False
     milestone: int = 0
     careful: bool = False
+    bot_token: str = ""          # encrypted (see discord_bot.protect)
     sensitive: bool = False
     overlay: bool = False
     overlay_corner: str = "top-right"

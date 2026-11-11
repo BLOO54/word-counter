@@ -28,6 +28,18 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Discord bot - install its libraries and bundle Node.js
+        run: |
+          cd bot
+          npm install --omit=dev --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+          Copy-Item (Get-Command node).Source node.exe
+          node -e "console.log(require('@discordjs/voice').generateDependencyReport())"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -57,11 +69,21 @@ jobs:
           $exe = "dist\WordCounter\WordCounter.exe"
           $p = Start-Process $exe -ArgumentList "--self-test","--report","$PWD\selftest-exe.txt" -Wait -PassThru
           Get-Content selftest-exe.txt
-          foreach ($needle in "PySide6", "numpy", "soundcard", "faster-whisper", "Speech model", "Discord-only listening") {
+          foreach ($needle in "PySide6", "numpy", "soundcard", "faster-whisper", "Speech model", "Discord-only listening", "Discord bot") {
             if (-not (Select-String -Path selftest-exe.txt -SimpleMatch $needle | Where-Object { $_.Line -like "✔*" })) {
               throw "Packaged app check failed: $needle"
             }
           }
+
+      - name: Discord bot - bundled engine loads, has encryption support, decodes voice
+        run: |
+          $exe = "dist\WordCounter\WordCounter.exe"
+          $p = Start-Process $exe -ArgumentList "--bot-selftest","$PWD\ci-bot.json" -PassThru
+          if (-not $p.WaitForExit(120000)) { Stop-Process $p -Force; throw "bot self-test hung" }
+          if (-not (Test-Path ci-bot.json)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "no bot report" }
+          Get-Content ci-bot.json
+          $r = Get-Content ci-bot.json -Raw | ConvertFrom-Json
+          if (-not $r.ok) { throw "the bundled Discord bot isn't working: $($r.error)" }
 
       - name: Press "Start Listening" for every sound source (catches sound-system start-up errors)
         run: |
@@ -165,6 +187,7 @@ jobs:
           if (-not (Test-Path window.png)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "window did not open" }
           if (-not (Test-Path window-milestone.png)) { throw "milestone pop-up did not show" }
           if (-not (Test-Path window-overlay.png)) { throw "overlay did not show" }
+          if (-not (Test-Path window-bot.png)) { throw "bot setup window did not open" }
           if (-not (Test-Path window-downloads.png)) { Get-Content "$env:APPDATA\WordCounter\app.log" -Tail 40; throw "Downloads window did not open" }
 
       - name: Can the app hear sound devices (info only - build machines have none)
@@ -254,11 +277,13 @@ jobs:
             window-milestone.png
             window-downloads.png
             window-overlay.png
+            window-bot.png
             ci-hear.json
             ci-listen.json
             ci-hear-better.json
             ci-hear-live.json
             ci-bench.json
+            ci-bot.json
             ci-gpu.json
           body: |
             **Download `WordCounter-Setup-${{ steps.ver.outputs.version }}.exe`** and double-click it.

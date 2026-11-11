@@ -57,6 +57,14 @@ def self_test(report: str | None) -> int:
         return f"Discord is running (process {pid})" if pid else "Discord isn't open right now"
     check("Discord-only listening", discord)
 
+    def bot_engine():
+        from wordcounter import discord_bot
+        why = discord_bot.available()
+        if why:
+            raise RuntimeError(why)
+        return "bot engine included"
+    check("Discord bot", bot_engine)
+
     def graphics():
         from wordcounter import gpu
         return ("NVIDIA driver found" if gpu.has_nvidia_driver() else "no NVIDIA driver") + \
@@ -208,6 +216,7 @@ def main() -> int:
     ap.add_argument("--listen-test", metavar="REPORT")
     ap.add_argument("--gpu-test", metavar="REPORT")
     ap.add_argument("--bench", nargs=2, metavar=("DIR", "REPORT"))
+    ap.add_argument("--bot-selftest", metavar="REPORT")
     args, _ = ap.parse_known_args()
 
     setup_logging()
@@ -237,6 +246,12 @@ def main() -> int:
         return 0
     if args.bench:
         return bench(args.bench[0], args.bench[1], args.model if args.model != "fast" else "better")
+    if args.bot_selftest:                     # build check: the bundled bot loads and decodes voice
+        from wordcounter import discord_bot
+        rep = discord_bot.selftest()
+        with open(args.bot_selftest, "w", encoding="utf-8") as fh:
+            json.dump(rep, fh, indent=2)
+        return 0
     if args.gpu_test:                         # build check: download + load NVIDIA's libraries
         import ctypes
         from wordcounter import gpu
@@ -311,11 +326,15 @@ def main() -> int:
             from wordcounter.ui import DownloadsDialog
             d = DownloadsDialog(win)
             d.show()
+            from wordcounter.ui import BotSetupDialog
+            b = BotSetupDialog(win)
+            b.show()
 
             def finish():
                 t.grab().save(args.screenshot.replace(".png", "-milestone.png"))
                 d.grab().save(args.screenshot.replace(".png", "-downloads.png"))
                 win.overlay.grab().save(args.screenshot.replace(".png", "-overlay.png"))
+                b.grab().save(args.screenshot.replace(".png", "-bot.png"))
                 app.quit()
             QTimer.singleShot(400, finish)
         QTimer.singleShot(int((args.quit_after or 2) * 1000), shot)

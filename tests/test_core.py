@@ -187,7 +187,7 @@ def test_every_source_is_known():
     assert set(SOURCES) == set(SOURCE_PARTS)
     for parts in SOURCE_PARTS.values():
         for kind in parts:
-            assert kind in Listener.NAMES and (kind in APPS or kind in ("mic", "pc"))
+            assert kind in Listener.NAMES and (kind in APPS or kind in ("mic", "pc", "bot"))
     assert callable(getattr(Listener, "_run_app", None))
 
 
@@ -208,3 +208,40 @@ def test_level_up_quiet_speech():
     assert 4 < np.abs(louder).max() / np.abs(quiet).max() <= 8.01
     loud = _tone(1.0, 0.3)
     assert np.array_equal(level_up(loud, [{"start": 0, "end": len(loud)}]), loud)   # normal talk untouched
+
+
+def test_bot_frames_and_pieces():
+    import io
+    import json
+    import struct
+    from wordcounter import discord_bot as db
+
+    def fr(kind, payload):
+        return bytes([kind]) + struct.pack("<I", len(payload)) + payload
+    uid = b"1234"
+    tone = (np.sin(np.arange(16000) / 5) * 8000).astype(np.int16).tobytes()     # 1 s of voice
+    stream = io.BytesIO(fr(1, json.dumps({"t": "start", "id": "1234", "name": "Connor"}).encode())
+                        + fr(2, bytes([len(uid)]) + uid + tone)
+                        + fr(1, json.dumps({"t": "end", "id": "1234"}).encode()))
+    pieces, statuses = [], []
+    bl = db.BotListener("x", lambda s, a, pid, final: pieces.append((s, len(a), pid, final)),
+                        lambda k, t: statuses.append(t), lambda k, v: None, live=lambda: True)
+    for kind, payload in db.read_frames(stream):
+        if kind == 1:
+            bl._event(json.loads(payload))
+        else:
+            n = payload[0]
+            bl._audio(payload[1:1 + n].decode(), payload[1 + n:])
+    assert bl.names["1234"] == "Connor"
+    finals = [p for p in pieces if p[3]]
+    assert len(finals) == 1 and finals[0][0] == "bot:1234" and finals[0][1] == 16000
+    assert all(p[2] == finals[0][2] for p in pieces)            # live checks belong to the same sentence
+
+
+def test_bot_token_helpers():
+    from wordcounter import discord_bot as db
+    import base64
+    token = base64.b64encode(b"112233445566778899").decode().rstrip("=") + ".abc.def"
+    assert db.bot_id_from_token(token) == "112233445566778899"
+    assert "client_id=112233445566778899" in db.invite_url("112233445566778899")
+    assert db.unprotect(db.protect("secret-token")) == "secret-token"

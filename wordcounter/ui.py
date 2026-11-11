@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, APP_VERSION, gpu, matching, models, stats, updater, vram
+from . import APP_NAME, APP_VERSION, discord_bot, gpu, matching, models, stats, updater, vram
 from .audio import Listener
 from .overlay import CORNERS, SIZES, Overlay
 from .config import SOURCE_PARTS, Settings, resource_dir
@@ -57,6 +57,7 @@ SOURCE_LABELS = [
     ("mic", "🎤  My microphone"),
     ("discord_mic", "💬+🎤  Discord + my microphone"),
     ("discord", "💬  Discord only"),
+    ("bot", "🤖  Discord bot (hears each person separately)"),
     ("pc", "🔊  All PC sound (Discord, games, videos)"),
     ("both", "🔊+🎤  All PC sound + my microphone"),
     ("spotify", "🎵  Spotify only (for testing)"),
@@ -152,6 +153,125 @@ class Toast(QWidget):
         self.move(screen.right() - self.width() - 24, screen.bottom() - self.height() - 24)
         self.show()
         QTimer.singleShot(ms, self.close)
+
+
+class _Done(QObject):
+    done = Signal(object)
+
+
+class BotSetupDialog(QDialog):
+    """Step-by-step setup for the Discord bot, plus a check that the key works."""
+
+    STEPS = (
+        "<b>1.</b> Open the <a href='https://discord.com/developers/applications'>Discord Developer Portal</a> "
+        "and sign in. Click <b>New Application</b>, name it (e.g. <i>Word Counter</i>) and click <b>Create</b>.<br><br>"
+        "<b>2.</b> On the left click <b>Bot</b>, then <b>Reset Token</b> → <b>Yes, do it!</b> and <b>Copy</b>. "
+        "Paste it below and click <b>Check &amp; save</b>. Treat it like a password - don't share it.<br><br>"
+        "<b>3.</b> Click <b>Add the bot to my server</b>, pick your server and click <b>Authorize</b>.<br><br>"
+        "<b>4.</b> Choose <b>Discord bot</b> under <i>Listen to</i>, press <b>Start Listening</b> and join a voice "
+        "channel - the bot follows you in (muted) and leaves when you leave or press Stop.")
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__(win)
+        self.win = win
+        self.setWindowTitle("Discord bot setup")
+        self.setStyleSheet(STYLE)
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        title = QLabel("Discord bot - hears each person separately")
+        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        lay.addWidget(title)
+        steps = QLabel(self.STEPS)
+        steps.setWordWrap(True)
+        steps.setOpenExternalLinks(True)
+        steps.setTextFormat(Qt.RichText)
+        lay.addWidget(steps)
+        row = QHBoxLayout()
+        self.token = QLineEdit()
+        self.token.setEchoMode(QLineEdit.Password)
+        self.token.setPlaceholderText("Paste your bot token here" if not win.s.bot_token
+                                      else "A token is saved - paste a new one to replace it")
+        self.check_btn = QPushButton("Check && save")
+        self.check_btn.setObjectName("primary")
+        self.check_btn.clicked.connect(self.check)
+        row.addWidget(self.token, 1)
+        row.addWidget(self.check_btn)
+        lay.addLayout(row)
+        self.result = QLabel("")
+        self.result.setWordWrap(True)
+        self.result.setObjectName("muted")
+        lay.addWidget(self.result)
+        btns = QHBoxLayout()
+        self.invite_btn = QPushButton("Add the bot to my server")
+        self.invite_btn.clicked.connect(self.invite)
+        self.forget_btn = QPushButton("Remove saved token")
+        self.forget_btn.clicked.connect(self.forget)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        btns.addWidget(self.invite_btn)
+        btns.addWidget(self.forget_btn)
+        btns.addStretch(1)
+        btns.addWidget(close)
+        lay.addLayout(btns)
+        note = QLabel("Everyone in the voice channel can see the bot - let your friends know what it's for. "
+                      "It only works in server voice channels (not DM or group calls), never talks, and "
+                      "nothing it hears leaves your PC.")
+        note.setWordWrap(True)
+        note.setObjectName("muted")
+        note.setStyleSheet("font-size: 12px;")
+        lay.addWidget(note)
+        self.signal = _Done()
+        self.signal.done.connect(self.on_checked)
+        why = discord_bot.available()
+        if why:
+            self.result.setText(f"⚠ {why}")
+        self.refresh()
+
+    def refresh(self):
+        has = bool(self.win.s.bot_token)
+        self.invite_btn.setEnabled(has)
+        self.forget_btn.setEnabled(has)
+
+    def check(self):
+        token = self.token.text().strip() or discord_bot.unprotect(self.win.s.bot_token)
+        if not token:
+            self.result.setText("Paste the bot token first (step 2).")
+            return
+        self.check_btn.setEnabled(False)
+        self.result.setText("Checking… (this takes a few seconds)")
+
+        def work():
+            self.signal.done.emit((token, discord_bot.check_token(token)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_checked(self, result):
+        token, rep = result
+        self.check_btn.setEnabled(True)
+        if rep.get("error"):
+            self.result.setText(f"⚠ {rep['error']}")
+            return
+        self.win.s.bot_token = discord_bot.protect(token)
+        self.win.s.save()
+        self.token.clear()
+        self.token.setPlaceholderText("A token is saved - paste a new one to replace it")
+        guilds = rep.get("guilds") or []
+        where = (f"It's in: {', '.join(guilds)}." if guilds else
+                 "It isn't in any server yet - do step 3.")
+        self.result.setText(f"✔ Works! Logged in as <b>{html.escape(rep.get('bot', 'your bot'))}</b>. {html.escape(where)}")
+        self.refresh()
+
+    def invite(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        bot_id = discord_bot.bot_id_from_token(discord_bot.unprotect(self.win.s.bot_token))
+        if bot_id:
+            QDesktopServices.openUrl(QUrl(discord_bot.invite_url(bot_id)))
+
+    def forget(self):
+        self.win.s.bot_token = ""
+        self.win.s.save()
+        self.result.setText("Token removed.")
+        self.refresh()
 
 
 class DownloadsDialog(QDialog):
@@ -299,6 +419,7 @@ class MainWindow(QMainWindow):
         self.overlay.configure(self.s.overlay_corner, self.s.overlay_size)
         self.model_note = ""
         self.recognizer = None
+        self.bot_listener = None
         self.downloading = None
 
         self.setWindowTitle(APP_NAME)
@@ -403,6 +524,12 @@ class MainWindow(QMainWindow):
         self.source.currentIndexChanged.connect(self.source_changed)
         src.addWidget(lbl)
         src.addWidget(self.source, 1)
+        self.bot_btn = QPushButton("Bot setup…")
+        self.bot_btn.setObjectName("small")
+        self.bot_btn.setToolTip("Set up the Discord bot that hears each person separately")
+        self.bot_btn.clicked.connect(self.show_bot_setup)
+        self.bot_btn.setVisible(self.s.source == "bot")
+        src.addWidget(self.bot_btn)
         acc_lbl = QLabel("Accuracy:")
         acc_lbl.setObjectName("muted")
         self.accuracy = QComboBox()
@@ -680,6 +807,9 @@ class MainWindow(QMainWindow):
                 last = b
             pieces.append(html.escape(text[last:]))
             tag = SOURCE_TAGS.get(source, "") if several else ""
+            if source.startswith("bot:"):
+                names = self.bot_listener.names if self.bot_listener else {}
+                tag = f"<b style='color:{ORANGE}'>{html.escape(names.get(source[4:], 'someone'))}:</b> "
             style = "margin-bottom:4px" + ("" if e["final"] else "; color:#7d8496; font-style:italic")
             out.append(f"<div style='{style}'>{tag}{''.join(pieces)}</div>")
         if not out:
@@ -718,6 +848,17 @@ class MainWindow(QMainWindow):
         self.listening = True
         self.source_status = {}
         for kind in self.wanted_sources():
+            if kind == "bot":
+                token = discord_bot.unprotect(self.s.bot_token)
+                if not token:
+                    self.source_status["bot"] = "set up the bot first - click “Bot setup…”"
+                    continue
+                lst = discord_bot.BotListener(token, self._piece, self.bridge.status.emit,
+                                              self.bridge.level.emit, live=lambda: self.s.live)
+                self.bot_listener = lst
+                self.listeners[kind] = lst
+                lst.start()
+                continue
             lst = Listener(kind, self._piece, self.bridge.status.emit, self.bridge.level.emit,
                            live=lambda: self.s.live, sensitive=lambda: self.s.sensitive)
             self.listeners[kind] = lst
@@ -748,6 +889,9 @@ class MainWindow(QMainWindow):
     def source_changed(self, _i):
         self.s.source = self.source.currentData()
         self.s.save()
+        self.bot_btn.setVisible(self.s.source == "bot")
+        if self.s.source == "bot" and not self.s.bot_token:
+            QTimer.singleShot(0, self.show_bot_setup)
         if self.listening:
             self.stop_listening()
             self.start_listening()
@@ -845,6 +989,9 @@ class MainWindow(QMainWindow):
     def update_overlay(self, flash=None):
         if self.s.overlay:
             self.overlay.set_state(self.s.words, self.listening, flash)
+
+    def show_bot_setup(self):
+        BotSetupDialog(self).exec()
 
     def milestone_changed(self, _i):
         self.s.milestone = int(self.milestone_box.currentData())

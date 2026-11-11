@@ -7,3 +7,6 @@ Output/
 models/
 .pytest_cache/
 selftest-*.txt
+bot/node_modules/
+bot/node.exe
+bot/package-lock.json

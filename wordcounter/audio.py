@@ -184,7 +184,8 @@ def run_probe(pid: int, timeout: float = 25.0) -> dict:
 class Listener(threading.Thread):
     """Records one sound source ('mic', 'pc', 'discord' or 'spotify') until stopped, feeding a Segmenter."""
 
-    NAMES = {"mic": "your microphone", "pc": "PC sound", "discord": "Discord", "spotify": "Spotify"}
+    NAMES = {"mic": "your microphone", "pc": "PC sound", "discord": "Discord", "spotify": "Spotify",
+             "bot": "Discord bot"}
 
     def __init__(self, kind: str, on_piece: Callable[[str, np.ndarray, int, bool], None],
                  on_status: Callable[[str, str], None], on_level: Callable[[str, float], None],

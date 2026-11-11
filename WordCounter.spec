@@ -4,8 +4,14 @@
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
+import os
+
 hidden, binaries = [], []
 datas = [("assets/icon.png", "assets"), ("assets/icon.ico", "assets"), ("models", "models")]
+if os.path.isdir("bot/node_modules"):                  # the Discord bot + its Node.js engine
+    datas.append(("bot", "bot"))
+else:
+    print("Discord bot not included (run npm install in bot/ first)")
 for pkg in ("faster_whisper", "soundcard", "ctranslate2"):
     try:
         datas += collect_data_files(pkg)
