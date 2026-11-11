@@ -517,7 +517,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.grid_host)
-        scroll.setMinimumHeight(170)
+        scroll.setMinimumHeight(205)
         lay.addWidget(scroll, 3)
 
         src = QHBoxLayout()
