@@ -45,6 +45,7 @@ QPushButton#remove:hover {{ color: #ff5b6b; }}
 QFrame#card {{ background: #181b22; border: 1px solid #2a2f3a; border-radius: 12px; }}
 QFrame#card[hit="true"] {{ border: 2px solid {PINK}; background: #22161f; }}
 QLabel#count {{ font-size: 46px; font-weight: 700; background: transparent; }}
+QLabel#who {{ color: #aab1c3; font-size: 12px; background: transparent; }}
 QLabel#word {{ font-size: 17px; font-weight: 600; background: transparent; }}
 QTextEdit {{ background: #181b22; border: 1px solid #2a2f3a; border-radius: 8px; padding: 6px;
     color: #aab1c3; font-size: 14px; }}
@@ -104,6 +105,11 @@ class WordCard(QFrame):
         self.count = QLabel(str(count))
         self.count.setObjectName("count")
         lay.addWidget(self.count)
+        self.who = QLabel("")
+        self.who.setObjectName("who")
+        self.who.setWordWrap(True)
+        self.who.setVisible(False)
+        lay.addWidget(self.who)
         row = QHBoxLayout()
         for label, fn in (("−1", lambda: win.change(index, -1)), ("+1", lambda: win.change(index, 1)),
                           ("Reset", lambda: win.change(index, None))):
@@ -692,6 +698,7 @@ class MainWindow(QMainWindow):
         cols = 3
         for i, w in enumerate(self.s.words):
             card = WordCard(self, i, w["text"], w["count"])
+            self._set_who(card, w)
             self.cards.append(card)
             self.grid.addWidget(card, i // cols, i % cols)
         self.grid.setRowStretch(len(self.s.words) // cols + 1, 1)
@@ -704,7 +711,7 @@ class MainWindow(QMainWindow):
             return
         if any(matching.words_of(w["text"]) == matching.words_of(text) for w in self.s.words):
             return
-        self.s.words.append({"text": text, "count": 0})
+        self.s.words.append({"text": text, "count": 0, "by": {}})
         self.s.save()
         self.rebuild_cards()
         self.render_transcript()
@@ -721,13 +728,16 @@ class MainWindow(QMainWindow):
             return
         w = self.s.words[i]
         w["count"] = 0 if delta is None else max(0, w["count"] + delta)
+        if delta is None:
+            w["by"] = {}
         self.cards[i].count.setText(str(w["count"]))
+        self._set_who(self.cards[i], w)
         self.update_overlay()
         self.s.save()
 
     def reset_all(self):
         for w in self.s.words:
-            w["count"] = 0
+            w["count"], w["by"] = 0, {}
         self.s.save()
         self.rebuild_cards()
 
@@ -755,8 +765,14 @@ class MainWindow(QMainWindow):
             before = w["count"]
             w["count"] = max(0, before + d)
             changed = True
+            if source.startswith("bot:"):             # Discord bot mode knows who said it
+                uid = source[4:]
+                stats.add_person(w, uid, d)
+                if self.bot_listener and uid in self.bot_listener.names:
+                    self.s.people[uid] = self.bot_listener.names[uid]
             if i < len(self.cards):
                 self.cards[i].count.setText(str(w["count"]))
+                self._set_who(self.cards[i], w)
             if w["count"] > before:
                 hit = True
                 if i < len(self.cards):
@@ -989,6 +1005,12 @@ class MainWindow(QMainWindow):
     def update_overlay(self, flash=None):
         if self.s.overlay:
             self.overlay.set_state(self.s.words, self.listening, flash)
+
+    def _set_who(self, card, w):
+        short, full = stats.people_line(w, self.s.people)
+        card.who.setText(short)
+        card.who.setToolTip(full)
+        card.who.setVisible(bool(short))
 
     def show_bot_setup(self):
         BotSetupDialog(self).exec()

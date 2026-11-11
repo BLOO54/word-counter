@@ -245,3 +245,19 @@ def test_bot_token_helpers():
     assert db.bot_id_from_token(token) == "112233445566778899"
     assert "client_id=112233445566778899" in db.invite_url("112233445566778899")
     assert db.unprotect(db.protect("secret-token")) == "secret-token"
+
+
+def test_people_counts():
+    from wordcounter import stats
+    w = {"text": "bro", "count": 0}
+    stats.add_person(w, "1", 3)
+    stats.add_person(w, "2", 5)
+    stats.add_person(w, "3", 1)
+    stats.add_person(w, "4", 1)
+    stats.add_person(w, "1", -1)                       # a live early count corrected
+    short, full = stats.people_line(w, {"1": "Connor", "2": "Blade", "3": "tessi"})
+    assert short == "Blade 5 · Connor 2 · tessi 1 · +1 more"
+    assert full.splitlines()[-1] == "someone 1"
+    stats.add_person(w, "2", -9)
+    assert "2" not in w["by"]
+    assert stats.people_line({"text": "x"}, {}) == ("", "")

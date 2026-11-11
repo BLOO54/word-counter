@@ -306,8 +306,10 @@ def main() -> int:
     app.setApplicationName("Word Counter")
 
     if args.screenshot:                       # example window for the build check
-        s = Settings(words=[{"text": "bro", "count": 12}, {"text": "no way", "count": 3},
-                            {"text": "skibidi", "count": 7}], beep=True, milestone=25, overlay=True)
+        s = Settings(words=[{"text": "bro", "count": 12, "by": {"1": 7, "2": 4, "3": 1}},
+                            {"text": "no way", "count": 3, "by": {"2": 3}},
+                            {"text": "skibidi", "count": 7}], beep=True, milestone=25, overlay=True,
+                     people={"1": "Connor", "2": "Blade", "3": "tessi"})
         s.save = lambda: None                 # don't touch the real settings
         win = MainWindow(s, start_engine=False)
         win.on_ready(None)

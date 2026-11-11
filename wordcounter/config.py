@@ -42,6 +42,7 @@ class Settings:
     use_gpu: bool = False
     milestone: int = 0
     careful: bool = False
+    people: dict = field(default_factory=dict)   # Discord user id -> name (bot mode)
     bot_token: str = ""          # encrypted (see discord_bot.protect)
     sensitive: bool = False
     overlay: bool = False
@@ -65,8 +66,11 @@ class Settings:
         for k in asdict(s):
             if k in raw:
                 setattr(s, k, raw[k])
-        s.words = [{"text": str(w.get("text", "")), "count": int(w.get("count", 0))}
+        s.words = [{"text": str(w.get("text", "")), "count": int(w.get("count", 0)),
+                    "by": {str(k): int(v) for k, v in (w.get("by") or {}).items()
+                           if isinstance(v, (int, float)) and v > 0}}
                    for w in s.words if isinstance(w, dict) and str(w.get("text", "")).strip()]
+        s.people = {str(k): str(v) for k, v in (s.people or {}).items()} if isinstance(s.people, dict) else {}
         if s.source not in SOURCES:
             s.source = "mic"
         s.vram_measured = {str(k): int(v) for k, v in (s.vram_measured or {}).items()

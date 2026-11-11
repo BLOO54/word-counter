@@ -46,3 +46,22 @@ class LiveCounter:
         else:
             self.seen[key] = {w: max(now[w], prev.get(w, 0)) for w in words}
         return deltas
+
+
+def add_person(word: dict, person: str, delta: int) -> None:
+    """Keep track of how many times each person (Discord bot mode) said this word."""
+    by = word.setdefault("by", {})
+    by[person] = max(0, by.get(person, 0) + delta)
+    if not by[person]:
+        del by[person]
+
+
+def people_line(word: dict, names: dict, most: int = 3) -> tuple[str, str]:
+    """('Connor 20 · Blade 10 · +2 more', full list for the tooltip) - most-said first."""
+    by = word.get("by") or {}
+    ranked = sorted(by.items(), key=lambda kv: -kv[1])
+    parts = [f"{names.get(uid, 'someone')} {n}" for uid, n in ranked]
+    if not parts:
+        return "", ""
+    short = " · ".join(parts[:most]) + (f" · +{len(parts) - most} more" if len(parts) > most else "")
+    return short, "\n".join(parts)
